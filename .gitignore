@@ -1,0 +1,17 @@
+# Temporary & test files (strictly excluded from repository)
+Temp/
+Temp/**
+
+# Dependencies & build output
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Editor & OS files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+Thumbs.db
+*.log
