@@ -1,5 +1,6 @@
 import { GameAssets } from '../assets/assetLoader';
 import { CHARACTERS } from '../data/characters';
+import { ITEMS } from '../data/items';
 import {
   Afterimage,
   Enemy,
@@ -10,6 +11,7 @@ import {
   IcePatch,
   Obstacle,
   Particle,
+  PickupItem,
   SlashArc,
   Snowball,
   SnowflakeBg,
@@ -25,6 +27,7 @@ export interface RenderState {
   fighters: Fighter[];
   enemies: Enemy[];
   snowballs: Snowball[];
+  pickupItems: PickupItem[];
   slashArcs: SlashArc[];
   telegraphs: TelegraphZone[];
   particles: Particle[];
@@ -289,6 +292,15 @@ export class Renderer25D {
       });
     }
 
+    // Pickup Items (2.5D bobbing with glowing aura & ground shadow)
+    for (const item of state.pickupItems) {
+      if (item.x < viewMinX || item.x > viewMaxX || item.y < viewMinY || item.y > viewMaxY) continue;
+      drawList.push({
+        sortY: item.y,
+        draw: () => this.drawPickupItem(ctx, item, state, assets, player),
+      });
+    }
+
     // Snowballs (2.5D: ground shadow at y, snowball sprite elevated at y - z!)
     for (const sb of state.snowballs) {
       if (sb.x < viewMinX || sb.x > viewMaxX || sb.y < viewMinY || sb.y > viewMaxY) continue;
@@ -487,6 +499,34 @@ export class Renderer25D {
 
     ctx.restore();
 
+    // Active Magic Book orbiting aura ring around fighter
+    if (f.activeBook && f.bookTimer > 0) {
+      const bColor = ITEMS[f.activeBook].color;
+      ctx.save();
+      ctx.strokeStyle = bColor;
+      ctx.globalAlpha = 0.65;
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 6]);
+      ctx.beginPath();
+      ctx.ellipse(f.x, f.y + 4, 29, 13, 0, state.time * 2.5, state.time * 2.5 + Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+    }
+
+    // Slowed frost crystal ring around fighter
+    if (f.slowTimer > 0) {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(192, 132, 252, 0.85)';
+      ctx.fillStyle = 'rgba(168, 85, 247, 0.16)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.ellipse(f.x, f.y + 4, 27, 12, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
+
     // Miyako Ice Shield (5s crystalline dome + rotating hexagonal barrier)
     if (f.iceShieldTimer > 0) {
       const pulse = 0.5 + 0.5 * Math.sin(state.time * 10);
@@ -652,6 +692,20 @@ export class Renderer25D {
     }
     ctx.restore();
 
+    // Slowed purple-frost shimmer indicator on enemies
+    if (e.slowTimer > 0 && !frozen) {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(192, 132, 252, 0.9)';
+      ctx.fillStyle = 'rgba(168, 85, 247, 0.16)';
+      ctx.lineWidth = 2;
+      const rx = isBoss ? 56 : e.kind === 'yeti' ? 32 : 24;
+      ctx.beginPath();
+      ctx.ellipse(e.x, e.y + 5, rx, rx * 0.42, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
+
     // Ice-cube frozen tint indicator when Unianna Time Freeze is active
     if (frozen) {
       ctx.save();
@@ -673,6 +727,61 @@ export class Renderer25D {
       ctx.fillRect(e.x - bw * 0.5 - 1, by - 1, bw + 2, 7);
       ctx.fillStyle = '#ff5b6e';
       ctx.fillRect(e.x - bw * 0.5, by, bw * (e.hp / e.maxHp), 5);
+    }
+  }
+
+  private drawPickupItem(
+    ctx: CanvasRenderingContext2D,
+    item: PickupItem,
+    state: RenderState,
+    assets: GameAssets,
+    player: Fighter | undefined
+  ): void {
+    // Blink warning in final 4 seconds before despawn
+    if (item.life < 4 && Math.floor(state.time * 10) % 2 === 0) return;
+
+    const def = ITEMS[item.kind];
+    const img = assets.items[item.kind];
+    const bob = Math.sin(state.time * 4.4 + item.bobPhase) * 5;
+    const pulse = 0.5 + 0.5 * Math.sin(state.time * 6 + item.bobPhase);
+
+    // Glowing floor aura ring
+    ctx.save();
+    ctx.beginPath();
+    ctx.ellipse(item.x, item.y + 3, 21 + pulse * 4, 10 + pulse * 2, 0, 0, Math.PI * 2);
+    ctx.fillStyle = `${def.color}33`;
+    ctx.fill();
+    ctx.strokeStyle = def.color;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.restore();
+
+    // Ground shadow
+    ctx.fillStyle = 'rgba(24, 52, 84, 0.28)';
+    ctx.beginPath();
+    ctx.ellipse(item.x, item.y + 3, 14, 6, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Crisp pixel icon bobbing in 2.5D
+    const size = 44;
+    ctx.drawImage(img, Math.round(item.x - size * 0.5), Math.round(item.y - size - 4 + bob), size, size);
+
+    // Show crisp item label when player is within 170px
+    if (player && Math.hypot(player.x - item.x, player.y - item.y) < 170) {
+      ctx.save();
+      ctx.font = 'bold 11px "Microsoft YaHei", monospace';
+      ctx.textAlign = 'center';
+      const label = def.nameZh;
+      const tw = ctx.measureText(label).width + 10;
+      const ly = item.y - size - 14 + bob;
+      ctx.fillStyle = 'rgba(10, 22, 38, 0.84)';
+      ctx.fillRect(item.x - tw * 0.5, ly - 13, tw, 17);
+      ctx.strokeStyle = def.color;
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(item.x - tw * 0.5, ly - 13, tw, 17);
+      ctx.fillStyle = def.color;
+      ctx.fillText(label, item.x, ly);
+      ctx.restore();
     }
   }
 
@@ -704,6 +813,20 @@ export class Renderer25D {
       ctx.moveTo(sb.x + Math.cos(angle) * (sb.radius + 6), drawY + Math.sin(angle) * (sb.radius + 6));
       ctx.lineTo(ax, ay);
       ctx.stroke();
+      ctx.restore();
+    }
+
+    // Glowing aura for Crit / Pierce / Slow enchanted snowballs
+    if (sb.isCrit || sb.pierceLeft || sb.appliesSlow) {
+      ctx.save();
+      ctx.fillStyle = sb.isCrit
+        ? 'rgba(255, 217, 61, 0.42)'
+        : sb.pierceLeft
+          ? 'rgba(74, 222, 128, 0.36)'
+          : 'rgba(192, 132, 252, 0.38)';
+      ctx.beginPath();
+      ctx.arc(sb.x, drawY, sb.radius + 5, 0, Math.PI * 2);
+      ctx.fill();
       ctx.restore();
     }
 
@@ -815,6 +938,12 @@ export class Renderer25D {
         ctx.fillStyle = 'rgba(160, 195, 225, 0.35)';
         ctx.fillRect(x0 + obs.x * sx - 1, y0 + obs.y * sy - 1, 2, 2);
       }
+    }
+
+    // Pickup Items (twinkling gold diamonds on minimap)
+    for (const item of state.pickupItems) {
+      ctx.fillStyle = ITEMS[item.kind].color;
+      ctx.fillRect(x0 + item.x * sx - 2, y0 + item.y * sy - 2, 4, 4);
     }
 
     // Enemies

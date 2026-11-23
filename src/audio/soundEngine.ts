@@ -180,6 +180,29 @@ class SoundEngine {
     this.playNoise(0.28, 0.22, 420);
   }
 
+  public playItemPickup(isBook: boolean): void {
+    if (isBook) {
+      this.playTone(523, 523, 0.08, 'triangle', 0.13, 0);
+      this.playTone(659, 659, 0.08, 'triangle', 0.13, 0.06);
+      this.playTone(784, 784, 0.09, 'triangle', 0.13, 0.12);
+      this.playTone(1174, 1568, 0.2, 'sine', 0.15, 0.18);
+    } else {
+      this.playTone(587, 880, 0.1, 'triangle', 0.13, 0);
+      this.playTone(880, 1174, 0.14, 'sine', 0.14, 0.08);
+    }
+  }
+
+  public playCritHit(): void {
+    this.playTone(880, 1760, 0.09, 'square', 0.14, 0);
+    this.playTone(320, 110, 0.14, 'sawtooth', 0.16, 0.02);
+    this.playNoise(0.12, 0.18, 2200);
+  }
+
+  public playSlowFreeze(): void {
+    this.playTone(960, 420, 0.14, 'sine', 0.11);
+    this.playNoise(0.08, 0.08, 3600);
+  }
+
   public playVictory(): void {
     const notes = [523, 659, 784, 1046];
     notes.forEach((n, i) => this.playTone(n, n, 0.16, 'square', 0.1, i * 0.11));

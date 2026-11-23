@@ -2,10 +2,12 @@ import { updateBrawlFighterAI, updateEnemyAI } from '../ai/aiController';
 import { GameAssets } from '../assets/assetLoader';
 import { sound } from '../audio/soundEngine';
 import { ADVENTURE_STAGES, CHARACTERS, CHARACTER_LIST } from '../data/characters';
+import { ITEMS, pickWeightedRandomItem } from '../data/items';
 import { InputManager, InputState } from '../input/inputManager';
 import { getFighterSpriteFrame, Renderer25D } from '../render/renderer25D';
 import { SkillContext, tryActivateSkill } from '../skills/skillSystem';
 import {
+  ActiveBuffInfo,
   Afterimage,
   BrawlSubMode,
   CharacterId,
@@ -19,8 +21,10 @@ import {
   GameScreen,
   HudSnapshot,
   IcePatch,
+  ItemKind,
   Obstacle,
   Particle,
+  PickupItem,
   SlashArc,
   Snowball,
   SnowflakeBg,
@@ -55,6 +59,7 @@ export class GameEngine {
   private fighters: Fighter[] = [];
   private enemies: Enemy[] = [];
   private snowballs: Snowball[] = [];
+  private pickupItems: PickupItem[] = [];
   private slashArcs: SlashArc[] = [];
   private telegraphs: TelegraphZone[] = [];
   private particles: Particle[] = [];
@@ -66,6 +71,8 @@ export class GameEngine {
   // Counters & timers
   private nextSnowballId = 1;
   private nextEnemyId = 1;
+  private nextItemId = 1;
+  private itemSpawnTimer = 6;
   private time = 0;
   private hitStopTimer = 0;
   private screenShake = 0;
@@ -289,6 +296,11 @@ export class GameEngine {
       iaidoWindowTimer: 0,
       iaidoHitCount: 0,
       iaidoSwingCd: 0,
+      speedBoostTimer: 0,
+      slowTimer: 0,
+      activeBook: null,
+      bookTimer: 0,
+      fullHpNotifyCd: 0,
       aiState: 'fight',
       aiTimer: 0.4,
       aiStrafeDir: Math.random() > 0.5 ? 1 : -1,
@@ -323,6 +335,8 @@ export class GameEngine {
     this.fighters = [player];
     this.enemies = [];
     this.snowballs = [];
+    this.pickupItems = [];
+    this.itemSpawnTimer = 7.5;
     this.slashArcs = [];
     this.telegraphs = [];
     this.particles = [];
@@ -334,6 +348,9 @@ export class GameEngine {
 
     this.snapCameraTo(player.x, player.y);
     this.spawnAdventureWave(0);
+    // Spawn 2 initial winter pickup items so players immediately discover power-ups!
+    this.spawnRandomMapItem();
+    this.spawnRandomMapItem();
     this.showBanner(cfg.title, cfg.subtitle, 3.2);
   }
 
@@ -407,6 +424,7 @@ export class GameEngine {
       attackCd: 0.9 + Math.random() * 1.0,
       hurtTimer: 0,
       invincibleFrames: 0,
+      slowTimer: 0,
       phase: 1,
       bossPattern: 0,
       chargeDirX: 0,
@@ -426,6 +444,8 @@ export class GameEngine {
     this.fighters = [];
     this.enemies = [];
     this.snowballs = [];
+    this.pickupItems = [];
+    this.itemSpawnTimer = 6.5;
     this.slashArcs = [];
     this.telegraphs = [];
     this.particles = [];
@@ -457,6 +477,10 @@ export class GameEngine {
 
     const player = this.fighters[0];
     this.snapCameraTo(player.x, player.y);
+    // Spawn 3 opening items across the Brawl snowfield for contested pickups!
+    this.spawnRandomMapItem();
+    this.spawnRandomMapItem();
+    this.spawnRandomMapItem();
     this.showBanner(
       this.selectedBrawlSubMode === 'elimination' ? '雪地大混战 · 生存淘汰' : '雪地大混战 · 2分钟积分赛',
       '四位主角各自为战！善用雪堆装填与专属技能夺冠！',
@@ -562,6 +586,7 @@ export class GameEngine {
       for (const e of this.enemies) {
         if (!e.alive) continue;
         if (e.invincibleFrames > 0) e.invincibleFrames--;
+        if (e.slowTimer > 0) e.slowTimer = Math.max(0, e.slowTimer - dt);
         updateEnemyAI(e, dt, aiWorld);
         this.integrateActorMovement(e, dt, false);
         // Contact damage if Yeti / Boss charges into player
@@ -579,6 +604,9 @@ export class GameEngine {
 
     // Update Snowballs
     this.updateSnowballs(dt);
+
+    // Update Pickup Items (spawning, bobbing, collection)
+    this.updatePickupItems(dt);
 
     // Update Boss Telegraph Danger Zones (paused during Time Freeze!)
     if (this.timeFreezeTimer <= 0) {
@@ -698,6 +726,15 @@ export class GameEngine {
     if (f.skillActiveTimer > 0) f.skillActiveTimer = Math.max(0, f.skillActiveTimer - dt);
     if (f.iceShieldTimer > 0) f.iceShieldTimer = Math.max(0, f.iceShieldTimer - dt);
     if (f.iaidoSwingCd > 0) f.iaidoSwingCd = Math.max(0, f.iaidoSwingCd - dt);
+    if (f.speedBoostTimer > 0) f.speedBoostTimer = Math.max(0, f.speedBoostTimer - dt);
+    if (f.slowTimer > 0) f.slowTimer = Math.max(0, f.slowTimer - dt);
+    if (f.fullHpNotifyCd > 0) f.fullHpNotifyCd = Math.max(0, f.fullHpNotifyCd - dt);
+    if (f.bookTimer > 0) {
+      f.bookTimer = Math.max(0, f.bookTimer - dt);
+      if (f.bookTimer <= 0) {
+        f.activeBook = null;
+      }
+    }
 
     // Tessel 5s rolling window reset if 3 hits not reached
     if (f.iaidoWindowTimer > 0) {
@@ -819,13 +856,34 @@ export class GameEngine {
         });
       }
     } else {
-      const targetVx = moveX * GAME_CONST.MOVE_SPEED;
-      const targetVy = moveY * GAME_CONST.MOVE_SPEED;
+      const boostMult = f.speedBoostTimer > 0 ? GAME_CONST.ICE_CREAM_SPEED_MULT : 1.0;
+      const slowMult = f.slowTimer > 0 ? 0.55 : 1.0;
+      const speed = GAME_CONST.MOVE_SPEED * boostMult * slowMult;
+      const targetVx = moveX * speed;
+      const targetVy = moveY * speed;
       const accel = onIce ? 4.2 : 16.0; // Slippery inertia on ice patches!
       f.vx += (targetVx - f.vx) * Math.min(1, dt * accel);
       f.vy += (targetVy - f.vy) * Math.min(1, dt * accel);
       if (f.actionTimer <= 0 && !f.isRefilling) {
         f.actionState = Math.hypot(f.vx, f.vy) > 16 ? 'walk' : 'idle';
+      }
+      // Ice cream speed-boost breeze sparkles!
+      if (f.speedBoostTimer > 0 && Math.hypot(f.vx, f.vy) > 40 && Math.random() < 0.38) {
+        this.particles.push({
+          x: f.x + (Math.random() - 0.5) * 18,
+          y: f.y + (Math.random() - 0.5) * 10,
+          z: 6 + Math.random() * 14,
+          vx: -f.vx * 0.2,
+          vy: -f.vy * 0.2,
+          vz: 15,
+          size: 4,
+          color: '#70e4ff',
+          alpha: 0.85,
+          life: 0.24,
+          maxLife: 0.24,
+          gravity: 10,
+          shape: 'square',
+        });
       }
     }
 
@@ -909,7 +967,10 @@ export class GameEngine {
 
   private tryFighterThrow(f: Fighter): void {
     if (f.throwCooldown > 0) return;
-    if (f.snowballs <= 0) {
+    const book = f.bookTimer > 0 ? f.activeBook : null;
+    const isInfinite = book === 'book_infinite';
+
+    if (!isInfinite && f.snowballs <= 0) {
       f.throwCooldown = 0.35;
       if (f.isPlayer) {
         sound.playEmptyClick();
@@ -926,14 +987,64 @@ export class GameEngine {
       return;
     }
 
-    f.snowballs--;
-    f.throwCooldown = GAME_CONST.THROW_CD;
+    if (!isInfinite) {
+      f.snowballs--;
+    }
+    f.throwCooldown = isInfinite ? GAME_CONST.THROW_CD * 0.65 : GAME_CONST.THROW_CD;
     f.actionState = 'throw';
     f.actionTimer = 0.2;
     this.updateFighterFacing(f, 0, 0);
 
-    const tint = CHARACTERS[f.charId].id === 'unianna' && this.timeFreezeTimer > 0 ? '#fff2a8' : '#eef8ff';
-    this.spawnSnowball(f.id, f.team, f.x, f.y, f.aimAngle, GAME_CONST.SNOWBALL_SPEED, GAME_CONST.SNOWBALL_DAMAGE, false, tint);
+    const isTimeFreezeShot = CHARACTERS[f.charId].id === 'unianna' && this.timeFreezeTimer > 0;
+
+    if (book === 'book_spread') {
+      // 绯红魔典：五发散弹！
+      const offsets = [-0.32, -0.16, 0, 0.16, 0.32];
+      for (const off of offsets) {
+        this.spawnSnowball(
+          f.id,
+          f.team,
+          f.x,
+          f.y,
+          f.aimAngle + off,
+          GAME_CONST.SNOWBALL_SPEED * 0.96,
+          GAME_CONST.SNOWBALL_DAMAGE,
+          false,
+          '#ffb3b3'
+        );
+      }
+    } else if (book === 'book_infinite') {
+      // 蔚蓝魔典：无限雪球连射！
+      this.spawnSnowball(f.id, f.team, f.x, f.y, f.aimAngle, GAME_CONST.SNOWBALL_SPEED * 1.06, GAME_CONST.SNOWBALL_DAMAGE, false, '#9be8ff');
+    } else if (book === 'book_slow') {
+      // 紫晶魔典：极寒减速雪球！
+      this.spawnSnowball(f.id, f.team, f.x, f.y, f.aimAngle, GAME_CONST.SNOWBALL_SPEED, GAME_CONST.SNOWBALL_DAMAGE, false, '#d8b4fe', {
+        appliesSlow: true,
+      });
+    } else if (book === 'book_crit') {
+      // 鎏金魔典：45% 概率 2 心暴击雪球！
+      const crit = Math.random() < GAME_CONST.BOOK_CRIT_CHANCE;
+      this.spawnSnowball(
+        f.id,
+        f.team,
+        f.x,
+        f.y,
+        f.aimAngle,
+        GAME_CONST.SNOWBALL_SPEED * (crit ? 1.16 : 1.02),
+        crit ? 2 : GAME_CONST.SNOWBALL_DAMAGE,
+        false,
+        crit ? '#ffe066' : '#fef3c7',
+        { isCrit: crit }
+      );
+    } else if (book === 'book_pierce') {
+      // 翠绿魔典：疾风穿透雪球（可穿透 3 个目标）！
+      this.spawnSnowball(f.id, f.team, f.x, f.y, f.aimAngle, GAME_CONST.SNOWBALL_SPEED * 1.35, GAME_CONST.SNOWBALL_DAMAGE, false, '#86efac', {
+        pierceLeft: 3,
+      });
+    } else {
+      const tint = isTimeFreezeShot ? '#fff2a8' : '#eef8ff';
+      this.spawnSnowball(f.id, f.team, f.x, f.y, f.aimAngle, GAME_CONST.SNOWBALL_SPEED, GAME_CONST.SNOWBALL_DAMAGE, false, tint);
+    }
     sound.playThrow();
   }
 
@@ -946,7 +1057,8 @@ export class GameEngine {
     speed: number,
     damage: number,
     isGiant = false,
-    tint = '#eef8ff'
+    tint = '#eef8ff',
+    extras?: { appliesSlow?: boolean; isCrit?: boolean; pierceLeft?: number }
   ): void {
     const vx = Math.cos(angle) * speed;
     const vy = Math.sin(angle) * speed;
@@ -966,17 +1078,21 @@ export class GameEngine {
       vx,
       vy,
       vz,
-      radius: isGiant ? 16 : 9,
+      radius: isGiant ? 16 : extras?.isCrit ? 12 : 9,
       damage,
       isGiant,
       tint,
       life: 0,
-      maxLife: isGiant ? 1.65 : 1.3,
+      maxLife: isGiant ? 1.65 : extras?.pierceLeft ? 1.55 : 1.3,
       frozenByTimeStop: false,
       freezeDelay: freezeOnLaunch ? 0.045 : -1,
       storedVx: vx,
       storedVy: vy,
       storedVz: vz,
+      appliesSlow: extras?.appliesSlow,
+      isCrit: extras?.isCrit,
+      pierceLeft: extras?.pierceLeft,
+      hitIds: extras?.pierceLeft ? [] : undefined,
     });
   }
 
@@ -1091,6 +1207,7 @@ export class GameEngine {
       let consumed = false;
       for (const f of this.fighters) {
         if (!f.alive || f.team === sb.team) continue;
+        if (sb.hitIds && sb.hitIds.includes(f.id)) continue;
         const dist = Math.hypot(sb.x - f.x, sb.y - f.y);
         if (dist <= f.radius + sb.radius) {
           // If Miyako has Ice Shield active -> Deflect with ice crystals!
@@ -1114,10 +1231,21 @@ export class GameEngine {
             continue;
           }
           const spd = Math.hypot(sb.vx, sb.vy) || 1;
-          this.damageFighter(f, sb.damage, (sb.vx / spd) * 180, (sb.vy / spd) * 180, sb.ownerId);
-          this.spawnBurst(sb.x, sb.y, sb.z, '#ffffff', sb.isGiant ? 16 : 10, 140);
-          consumed = true;
-          break;
+          const hitOk = this.damageFighter(f, sb.damage, (sb.vx / spd) * 180, (sb.vy / spd) * 180, sb.ownerId, sb.isCrit);
+          if (hitOk && sb.appliesSlow) {
+            f.slowTimer = Math.max(f.slowTimer, GAME_CONST.BOOK_SLOW_EFFECT_SECONDS);
+            sound.playSlowFreeze();
+            this.spawnBurst(f.x, f.y, 18, '#c084fc', 12, 130);
+            this.floatingTexts.push({ x: f.x, y: f.y - 62, text: '❄️ 减速!', color: '#d8b4fe', life: 0.9, maxLife: 0.9, size: 13 });
+          }
+          this.spawnBurst(sb.x, sb.y, sb.z, sb.isCrit ? '#ffe066' : sb.tint, sb.isCrit ? 18 : sb.isGiant ? 16 : 10, sb.isCrit ? 190 : 140);
+          if (sb.pierceLeft && sb.pierceLeft > 1 && sb.hitIds) {
+            sb.pierceLeft--;
+            sb.hitIds.push(f.id);
+          } else {
+            consumed = true;
+            break;
+          }
         }
       }
       if (consumed) {
@@ -1128,19 +1256,196 @@ export class GameEngine {
       // Hit Adventure Enemies
       for (const e of this.enemies) {
         if (!e.alive || sb.team === 99) continue;
+        if (sb.hitIds && sb.hitIds.includes(e.id)) continue;
         const dist = Math.hypot(sb.x - e.x, sb.y - e.y);
         if (dist <= e.radius + sb.radius) {
           const spd = Math.hypot(sb.vx, sb.vy) || 1;
-          this.damageEnemy(e, sb.damage, (sb.vx / spd) * 165, (sb.vy / spd) * 165, sb.ownerId);
-          this.spawnBurst(sb.x, sb.y, sb.z, '#ffffff', 11, 130);
-          consumed = true;
-          break;
+          const hitOk = this.damageEnemy(e, sb.damage, (sb.vx / spd) * 165, (sb.vy / spd) * 165, sb.ownerId, sb.isCrit);
+          if (hitOk && sb.appliesSlow) {
+            e.slowTimer = Math.max(e.slowTimer, GAME_CONST.BOOK_SLOW_EFFECT_SECONDS);
+            sound.playSlowFreeze();
+            this.spawnBurst(e.x, e.y, 18, '#c084fc', 12, 130);
+            this.floatingTexts.push({ x: e.x, y: e.y - 62, text: '❄️ 减速!', color: '#d8b4fe', life: 0.9, maxLife: 0.9, size: 13 });
+          }
+          this.spawnBurst(sb.x, sb.y, sb.z, sb.isCrit ? '#ffe066' : sb.tint, sb.isCrit ? 18 : 11, sb.isCrit ? 190 : 130);
+          if (sb.pierceLeft && sb.pierceLeft > 1 && sb.hitIds) {
+            sb.pierceLeft--;
+            sb.hitIds.push(e.id);
+          } else {
+            consumed = true;
+            break;
+          }
         }
       }
       if (consumed) {
         this.snowballs.splice(i, 1);
       }
     }
+  }
+
+  private spawnRandomMapItem(): void {
+    const player = this.fighters.find((f) => f.isPlayer);
+    const preferHeal = !!player && player.hp <= 3;
+    const kind = pickWeightedRandomItem(preferHeal);
+
+    for (let tries = 0; tries < 40; tries++) {
+      const x = 150 + Math.random() * (this.map.width - 300);
+      const y = 150 + Math.random() * (this.map.height - 300);
+      let blocked = false;
+      for (const obs of this.map.obstacles) {
+        if (Math.hypot(x - obs.x, y - obs.y) < Math.max(obs.radiusX, obs.radiusY) + 38) {
+          blocked = true;
+          break;
+        }
+      }
+      if (!blocked) {
+        this.spawnItemAt(kind, x, y);
+        return;
+      }
+    }
+  }
+
+  private spawnItemAt(kind: ItemKind, x: number, y: number): void {
+    if (this.pickupItems.length >= 6) return;
+    this.pickupItems.push({
+      id: this.nextItemId++,
+      kind,
+      x,
+      y,
+      life: GAME_CONST.ITEM_LIFETIME,
+      maxLife: GAME_CONST.ITEM_LIFETIME,
+      bobPhase: Math.random() * Math.PI * 2,
+    });
+    this.spawnBurst(x, y, 16, ITEMS[kind].color, 10, 95);
+  }
+
+  private updatePickupItems(dt: number): void {
+    // Periodic map item drops (paused during Time Freeze)
+    if (this.timeFreezeTimer <= 0) {
+      this.itemSpawnTimer -= dt;
+      if (this.itemSpawnTimer <= 0) {
+        this.itemSpawnTimer = this.selectedMode === 'brawl' ? 9.5 : 11.5;
+        if (this.pickupItems.length < 5) {
+          this.spawnRandomMapItem();
+        }
+      }
+    }
+
+    for (let i = this.pickupItems.length - 1; i >= 0; i--) {
+      const item = this.pickupItems[i];
+      if (this.timeFreezeTimer <= 0) {
+        item.life -= dt;
+        if (item.life <= 0) {
+          this.pickupItems.splice(i, 1);
+          continue;
+        }
+      }
+
+      // Check fighter pickup
+      let picked = false;
+      for (const f of this.fighters) {
+        if (!f.alive) continue;
+        if (this.timeFreezeTimer > 0 && f.id !== this.timeFreezeOwnerId) continue;
+        const dist = Math.hypot(f.x - item.x, f.y - item.y);
+        if (dist <= f.radius + GAME_CONST.ITEM_PICKUP_RADIUS * 0.65) {
+          if (this.applyItemPickup(f, item)) {
+            picked = true;
+            break;
+          }
+        }
+      }
+      if (picked) {
+        this.pickupItems.splice(i, 1);
+      }
+    }
+  }
+
+  private applyItemPickup(f: Fighter, item: PickupItem): boolean {
+    const def = ITEMS[item.kind];
+
+    if (item.kind === 'bandage') {
+      if (f.hp >= f.maxHp) {
+        if (f.isPlayer && f.fullHpNotifyCd <= 0) {
+          f.fullHpNotifyCd = 1.4;
+          this.floatingTexts.push({
+            x: item.x,
+            y: item.y - 34,
+            text: '🩹 血量已满',
+            color: '#ffd166',
+            life: 0.85,
+            maxLife: 0.85,
+            size: 12,
+          });
+        }
+        return false; // Don't waste bandage at full HP!
+      }
+      f.hp = Math.min(f.maxHp, f.hp + 1);
+      sound.playItemPickup(false);
+      this.spawnBurst(f.x, f.y, 18, def.color, 16, 130);
+      this.floatingTexts.push({
+        x: f.x,
+        y: f.y - 52,
+        text: '🩹 绷带 +1 ♥',
+        color: '#ff85a1',
+        life: 1.2,
+        maxLife: 1.2,
+        size: 15,
+      });
+      return true;
+    }
+
+    if (item.kind === 'ice_cream') {
+      f.speedBoostTimer = GAME_CONST.ICE_CREAM_DURATION;
+      sound.playItemPickup(false);
+      this.spawnBurst(f.x, f.y, 18, def.color, 18, 150);
+      this.floatingTexts.push({
+        x: f.x,
+        y: f.y - 52,
+        text: '🍦 冰淇淋·疾速 7s!',
+        color: '#70e4ff',
+        life: 1.3,
+        maxLife: 1.3,
+        size: 15,
+      });
+      return true;
+    }
+
+    if (item.kind === 'hot_cocoa') {
+      f.snowballs = f.maxSnowballs;
+      f.skillCd *= 0.5;
+      f.dashCd *= 0.5;
+      sound.playItemPickup(false);
+      this.spawnBurst(f.x, f.y, 18, def.color, 18, 140);
+      this.floatingTexts.push({
+        x: f.x,
+        y: f.y - 52,
+        text: '☕ 热可可·满球&冷却减半!',
+        color: '#ffbe76',
+        life: 1.35,
+        maxLife: 1.35,
+        size: 14,
+      });
+      return true;
+    }
+
+    // 5 Color-Coded Magic Books!
+    f.activeBook = item.kind;
+    f.bookTimer = def.duration;
+    if (item.kind === 'book_infinite' && f.snowballs < 1) {
+      f.snowballs = f.maxSnowballs;
+    }
+    sound.playItemPickup(true);
+    this.spawnBurst(f.x, f.y, 22, def.color, 22, 175);
+    this.floatingTexts.push({
+      x: f.x,
+      y: f.y - 56,
+      text: `${def.icon} ${def.nameZh}!`,
+      color: def.color,
+      life: 1.45,
+      maxLife: 1.45,
+      size: 15,
+    });
+    return true;
   }
 
   private detonateTelegraph(tz: TelegraphZone): void {
@@ -1174,7 +1479,7 @@ export class GameEngine {
     }
   }
 
-  public damageFighter(target: Fighter, amount: number, knockX: number, knockY: number, attackerId: string): boolean {
+  public damageFighter(target: Fighter, amount: number, knockX: number, knockY: number, attackerId: string, isCrit = false): boolean {
     if (!target.alive) return false;
     // Invincible during dash, 30-frame hit invincibility, or Miyako 5s Ice Shield!
     if (target.dashTimer > 0 || target.invincibleFrames > 0) return false;
@@ -1202,7 +1507,12 @@ export class GameEngine {
     target.vx += knockX;
     target.vy += knockY;
 
-    sound.playPlayerHurt();
+    if (isCrit) {
+      sound.playCritHit();
+      this.screenShake = Math.max(this.screenShake, 9);
+    } else {
+      sound.playPlayerHurt();
+    }
     if (target.isPlayer) {
       this.screenShake = Math.max(this.screenShake, 8);
       this.hitStopTimer = 0.035;
@@ -1211,11 +1521,11 @@ export class GameEngine {
     this.floatingTexts.push({
       x: target.x,
       y: target.y - 46,
-      text: `-${amount} ♥`,
-      color: '#ff5b6e',
-      life: 0.85,
-      maxLife: 0.85,
-      size: 15,
+      text: isCrit ? `💥 暴击 -${amount} ♥` : `-${amount} ♥`,
+      color: isCrit ? '#ffe066' : '#ff5b6e',
+      life: 0.95,
+      maxLife: 0.95,
+      size: isCrit ? 17 : 15,
     });
 
     if (target.hp <= 0) {
@@ -1242,7 +1552,7 @@ export class GameEngine {
     return true;
   }
 
-  public damageEnemy(enemy: Enemy, amount: number, knockX: number, knockY: number, attackerId: string): boolean {
+  public damageEnemy(enemy: Enemy, amount: number, knockX: number, knockY: number, attackerId: string, isCrit = false): boolean {
     if (!enemy.alive || enemy.invincibleFrames > 0) return false;
     enemy.hp = Math.max(0, enemy.hp - amount);
     enemy.hurtTimer = enemy.kind === 'boss_frost_king' ? 0.08 : 0.22;
@@ -1251,15 +1561,20 @@ export class GameEngine {
     enemy.vx += knockX * kbScale;
     enemy.vy += knockY * kbScale;
 
-    sound.playSnowHit();
+    if (isCrit) {
+      sound.playCritHit();
+      this.screenShake = Math.max(this.screenShake, 6);
+    } else {
+      sound.playSnowHit();
+    }
     this.floatingTexts.push({
       x: enemy.x,
       y: enemy.y - (enemy.kind === 'boss_frost_king' ? 92 : 44),
-      text: `-${amount}`,
-      color: '#ffe066',
-      life: 0.65,
-      maxLife: 0.65,
-      size: enemy.kind === 'boss_frost_king' ? 17 : 14,
+      text: isCrit ? `💥 暴击 -${amount}!` : `-${amount}`,
+      color: isCrit ? '#ffd93d' : '#ffe066',
+      life: isCrit ? 0.9 : 0.65,
+      maxLife: isCrit ? 0.9 : 0.65,
+      size: isCrit ? 18 : enemy.kind === 'boss_frost_king' ? 17 : 14,
     });
 
     if (enemy.hp <= 0) {
@@ -1268,6 +1583,14 @@ export class GameEngine {
       const attacker = this.fighters.find((f) => f.id === attackerId);
       if (attacker) attacker.kills++;
       this.spawnBurst(enemy.x, enemy.y, 20, '#b8eeff', enemy.kind === 'boss_frost_king' ? 48 : 18, 190);
+      // Chance to drop a winter pickup item on enemy defeat!
+      if (enemy.kind !== 'boss_frost_king') {
+        const dropChance = enemy.kind === 'snow_sprite' ? 0.24 : 0.48;
+        if (Math.random() < dropChance) {
+          const player = this.fighters.find((f) => f.isPlayer);
+          this.spawnItemAt(pickWeightedRandomItem(!!player && player.hp <= 3), enemy.x, enemy.y);
+        }
+      }
       if (enemy.kind === 'boss_frost_king') {
         this.screenShake = 14;
         this.hitStopTimer = 0.09;
@@ -1516,6 +1839,7 @@ export class GameEngine {
       fighters: this.fighters,
       enemies: this.enemies,
       snowballs: this.snowballs,
+      pickupItems: this.pickupItems,
       telegraphs: this.telegraphs,
       throwSnowball: (
         ownerId: string,
@@ -1556,6 +1880,7 @@ export class GameEngine {
         fighters: this.fighters,
         enemies: this.enemies,
         snowballs: this.snowballs,
+        pickupItems: this.pickupItems,
         slashArcs: this.slashArcs,
         telegraphs: this.telegraphs,
         particles: this.particles,
@@ -1584,6 +1909,41 @@ export class GameEngine {
     const bossEntity = this.enemies.find((e) => e.alive && e.kind === 'boss_frost_king');
     const stageCfg = ADVENTURE_STAGES[this.stageIndex];
 
+    const buffs: ActiveBuffInfo[] = [];
+    if (p) {
+      if (p.speedBoostTimer > 0) {
+        buffs.push({
+          id: 'ice_cream',
+          icon: ITEMS.ice_cream.icon,
+          label: ITEMS.ice_cream.shortLabel,
+          remaining: p.speedBoostTimer,
+          maxDuration: ITEMS.ice_cream.duration,
+          color: ITEMS.ice_cream.color,
+        });
+      }
+      if (p.activeBook && p.bookTimer > 0) {
+        const bdef = ITEMS[p.activeBook];
+        buffs.push({
+          id: p.activeBook,
+          icon: bdef.icon,
+          label: bdef.shortLabel,
+          remaining: p.bookTimer,
+          maxDuration: bdef.duration,
+          color: bdef.color,
+        });
+      }
+      if (p.slowTimer > 0) {
+        buffs.push({
+          id: 'slow_debuff',
+          icon: '❄️',
+          label: '减速中',
+          remaining: p.slowTimer,
+          maxDuration: GAME_CONST.BOOK_SLOW_EFFECT_SECONDS,
+          color: '#c084fc',
+        });
+      }
+    }
+
     this.onHudUpdate({
       screen: this.screen,
       mode: this.selectedMode,
@@ -1606,6 +1966,7 @@ export class GameEngine {
         refillProgress: p ? Math.min(1, p.refillTimer / GAME_CONST.REFILL_HOLD_SECONDS) : 0,
         alive: p ? p.alive : true,
         respawnTimer: p ? p.respawnTimer : 0,
+        buffs,
       },
       stageNum: this.stageIndex + 1,
       stageTotal: ADVENTURE_STAGES.length,

@@ -1,9 +1,10 @@
-import { CharacterId, EnemyKind, ObstacleKind } from '../types';
+import { CharacterId, EnemyKind, ItemKind, ObstacleKind } from '../types';
 
 export interface GameAssets {
   characters: Record<CharacterId, HTMLImageElement>;
   enemies: Record<EnemyKind, HTMLImageElement>;
   props: Record<ObstacleKind, HTMLImageElement>;
+  items: Record<ItemKind, HTMLImageElement>;
 }
 
 function loadImage(src: string): Promise<HTMLImageElement> {
@@ -37,6 +38,14 @@ export async function loadAllAssets(): Promise<GameAssets> {
     snow_fort,
     fallen_log,
     stump_crystal,
+    bandage,
+    ice_cream,
+    hot_cocoa,
+    book_spread,
+    book_infinite,
+    book_slow,
+    book_crit,
+    book_pierce,
   ] = await Promise.all([
     loadImage('./assets/sprites/unianna.png'),
     loadImage('./assets/sprites/kuki.png'),
@@ -54,6 +63,14 @@ export async function loadAllAssets(): Promise<GameAssets> {
     loadImage('./assets/tiles/snow_fort.png'),
     loadImage('./assets/tiles/fallen_log.png'),
     loadImage('./assets/tiles/stump_crystal.png'),
+    loadImage('./assets/items/bandage.png'),
+    loadImage('./assets/items/ice_cream.png'),
+    loadImage('./assets/items/hot_cocoa.png'),
+    loadImage('./assets/items/book_spread.png'),
+    loadImage('./assets/items/book_infinite.png'),
+    loadImage('./assets/items/book_slow.png'),
+    loadImage('./assets/items/book_crit.png'),
+    loadImage('./assets/items/book_pierce.png'),
   ]);
 
   cachedAssets = {
@@ -68,6 +85,16 @@ export async function loadAllAssets(): Promise<GameAssets> {
       snow_fort,
       fallen_log,
       stump_crystal,
+    },
+    items: {
+      bandage,
+      ice_cream,
+      hot_cocoa,
+      book_spread,
+      book_infinite,
+      book_slow,
+      book_crit,
+      book_pierce,
     },
   };
 

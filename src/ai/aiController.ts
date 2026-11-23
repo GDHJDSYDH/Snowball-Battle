@@ -3,6 +3,7 @@ import {
   Fighter,
   GAME_CONST,
   Obstacle,
+  PickupItem,
   Snowball,
   TelegraphZone,
 } from '../types';
@@ -15,6 +16,7 @@ export interface AiWorldAccess {
   fighters: Fighter[];
   enemies: Enemy[];
   snowballs: Snowball[];
+  pickupItems: PickupItem[];
   telegraphs: TelegraphZone[];
   throwSnowball: (
     ownerId: string,
@@ -167,8 +169,9 @@ export function updateEnemyAI(enemy: Enemy, dt: number, world: AiWorldAccess): v
   // Movement & distance keeping
   const desiredDist =
     enemy.kind === 'snow_sprite' ? 210 : enemy.kind === 'frost_mage' ? 320 : 165;
+  const slowMult = enemy.slowTimer > 0 ? 0.5 : 1.0;
   const speed =
-    enemy.kind === 'snow_sprite' ? 128 : enemy.kind === 'frost_mage' ? 98 : 112;
+    (enemy.kind === 'snow_sprite' ? 128 : enemy.kind === 'frost_mage' ? 98 : 112) * slowMult;
 
   let goalX = target.x;
   let goalY = target.y;
@@ -241,7 +244,8 @@ function updateBossAI(
 
   if (boss.state === 'charge') {
     boss.stateTimer -= dt;
-    const spd = boss.phase === 2 ? 360 : 300;
+    const slowMult = boss.slowTimer > 0 ? 0.68 : 1.0;
+    const spd = (boss.phase === 2 ? 360 : 300) * slowMult;
     boss.vx = boss.chargeDirX * spd;
     boss.vy = boss.chargeDirY * spd;
     if (boss.stateTimer <= 0) {
@@ -324,7 +328,8 @@ function updateBossAI(
   }
 
   // Move toward player
-  const speed = boss.phase === 2 ? 132 : 104;
+  const slowMult = boss.slowTimer > 0 ? 0.68 : 1.0;
+  const speed = (boss.phase === 2 ? 132 : 104) * slowMult;
   const steer = steerWithAvoidance(boss.x, boss.y, target.x, target.y, world.obstacles);
   boss.vx += (steer.dx * speed - boss.vx) * Math.min(1, dt * 6);
   boss.vy += (steer.dy * speed - boss.vy) * Math.min(1, dt * 6);
@@ -420,9 +425,11 @@ export function updateBrawlFighterAI(
     }
   }
 
-  // 3. Snowball Refill Logic: seek nearest snow pile when empty (or <= 1 and safe)
+  // 3. Snowball Refill Logic: seek nearest snow pile when empty (skip if Infinite Snowball Book is active!)
+  const hasInfiniteBook = ai.activeBook === 'book_infinite' && ai.bookTimer > 0;
   const needsRefill =
-    ai.snowballs === 0 || (ai.isRefilling && ai.snowballs < ai.maxSnowballs && (!dangerBall || dangerDist > 90));
+    !hasInfiniteBook &&
+    (ai.snowballs === 0 || (ai.isRefilling && ai.snowballs < ai.maxSnowballs && (!dangerBall || dangerDist > 90)));
 
   if (needsRefill && !(ai.charId === 'tessel' && ai.skillCd <= 0 && bestDist < 170)) {
     let bestPile: Obstacle | null = null;
@@ -447,6 +454,36 @@ export function updateBrawlFighterAI(
         ai.aimAngle = Math.atan2(moveY, moveX);
         return { moveX, moveY, wantThrow: false, wantRefill: false, wantDash: false, wantSkill };
       }
+    }
+  }
+
+  // 3.5 Opportunistically grab nearby pickup items (Bandage when injured, or nearby Magic Books / Ice Cream)
+  if (!ai.isRefilling && world.pickupItems.length > 0) {
+    let bestItem: PickupItem | null = null;
+    let bestScore = Infinity;
+    for (const item of world.pickupItems) {
+      if (item.kind === 'bandage' && ai.hp >= ai.maxHp) continue;
+      const d = Math.hypot(item.x - ai.x, item.y - ai.y);
+      const maxSearch = item.kind === 'bandage' && ai.hp <= 3 ? 340 : 230;
+      if (d < maxSearch) {
+        const score = item.kind === 'bandage' && ai.hp <= 3 ? d * 0.55 : d;
+        if (score < bestScore) {
+          bestScore = score;
+          bestItem = item;
+        }
+      }
+    }
+    if (bestItem) {
+      const steer = steerWithAvoidance(ai.x, ai.y, bestItem.x, bestItem.y, world.obstacles);
+      moveX = steer.dx;
+      moveY = steer.dy;
+      if (target) {
+        ai.aimAngle = Math.atan2(target.y - ai.y, target.x - ai.x);
+        if ((ai.snowballs > 0 || hasInfiniteBook) && ai.throwCooldown <= 0 && bestDist < 420 && hasLineOfSight(ai.x, ai.y, target.x, target.y, world.obstacles)) {
+          wantThrow = true;
+        }
+      }
+      return { moveX, moveY, wantThrow, wantRefill: false, wantDash: false, wantSkill };
     }
   }
 
@@ -485,7 +522,7 @@ export function updateBrawlFighterAI(
 
     // Throw snowball when in range and clear sightline
     if (
-      ai.snowballs > 0 &&
+      (ai.snowballs > 0 || hasInfiniteBook) &&
       ai.throwCooldown <= 0 &&
       bestDist < 480 &&
       hasLineOfSight(ai.x, ai.y, target.x, target.y, world.obstacles)

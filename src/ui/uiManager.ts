@@ -1,5 +1,6 @@
 import { GameAssets } from '../assets/assetLoader';
 import { CHARACTERS, CHARACTER_LIST } from '../data/characters';
+import { ITEM_KINDS, ITEMS, LICENSE_INFO, OC_CREDITS } from '../data/items';
 import { GameEngine } from '../game/gameEngine';
 import { BrawlSubMode, CharacterId, GameMode, GameScreen, HudSnapshot } from '../types';
 
@@ -17,6 +18,7 @@ export class UIManager {
   // Cached dynamic HUD nodes (avoids full DOM rebuild every 50ms -> rock solid mobile touch!)
   private heartsEl: HTMLElement | null = null;
   private snowballsEl: HTMLElement | null = null;
+  private buffsEl: HTMLElement | null = null;
   private stagePillEl: HTMLElement | null = null;
   private bossBarEl: HTMLElement | null = null;
   private bossFillEl: HTMLElement | null = null;
@@ -155,12 +157,31 @@ export class UIManager {
               <div><b>电脑：</b><kbd>WASD</kbd>/<kbd>方向键</kbd>移动 · <kbd>左键</kbd>瞄准投掷 · <kbd>Z</kbd>冲刺 · <kbd>R</kbd>雪堆旁长按1.5s补球 · <kbd>X</kbd>/<kbd>E</kbd>/<kbd>右键</kbd>技能</div>
               <div><b>手机：</b>左侧虚拟摇杆移动 · 右侧按钮拖动瞄准投掷 / 冲刺 / 技能 / 雪堆旁长按装填</div>
             </div>
-            <button class="pixel-btn gold" id="btn-start-game" style="font-size:17px;padding:12px 28px;">
-              ❄️ 开始打雪仗!
-            </button>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+              <button class="pixel-btn secondary" id="btn-item-guide" style="font-size:13px;padding:10px 14px;">
+                📖 道具图鉴
+              </button>
+              <button class="pixel-btn gold" id="btn-start-game" style="font-size:17px;padding:12px 26px;">
+                ❄️ 开始打雪仗!
+              </button>
+            </div>
+          </div>
+
+          <div class="credits-footer">
+            <div class="credits-links">
+              <span style="color:#ffd966;font-weight:700;">OC 形象归属：</span>
+              ${OC_CREDITS.map(
+                (oc) => `<a href="${oc.url}" target="_blank" rel="noopener noreferrer">${oc.name}</a>`
+              ).join(' · ')}
+            </div>
+            <div class="credits-links">
+              <span>版权协议：</span>
+              <a href="${LICENSE_INFO.url}" target="_blank" rel="noopener noreferrer">${LICENSE_INFO.name}</a>
+            </div>
           </div>
         </div>
       </div>
+      <div id="guide-modal-slot"></div>
     `;
 
     // Bind character selection
@@ -200,6 +221,10 @@ export class UIManager {
     startBtn?.addEventListener('click', () => {
       this.engine.startNewGame(this.selectedChar, this.selectedMode, this.selectedBrawlSub);
     });
+
+    // Item Guide & License Info Modal button
+    const guideBtn = this.root.querySelector('#btn-item-guide');
+    guideBtn?.addEventListener('click', () => this.openItemGuideModal());
 
     // Animate the 4 chibi pixel character previews live on the select cards!
     const previewCanvases = Array.from(this.root.querySelectorAll<HTMLCanvasElement>('.char-preview-canvas'));
@@ -294,6 +319,7 @@ export class UIManager {
           </div>
           <div class="hud-row" id="hud-hearts"></div>
           <div class="hud-row" id="hud-snowballs"></div>
+          <div class="buff-bar" id="hud-buffs"></div>
         </div>
 
         <div class="hud-center">
@@ -321,6 +347,7 @@ export class UIManager {
     // Cache DOM refs
     this.heartsEl = this.root.querySelector('#hud-hearts');
     this.snowballsEl = this.root.querySelector('#hud-snowballs');
+    this.buffsEl = this.root.querySelector('#hud-buffs');
     this.stagePillEl = this.root.querySelector('#hud-stage-pill');
     this.bossBarEl = this.root.querySelector('#hud-boss-bar');
     this.bossFillEl = this.root.querySelector('#hud-boss-fill');
@@ -480,8 +507,23 @@ export class UIManager {
       for (let i = 0; i < p.maxSnowballs; i++) {
         html += `<span class="snowball-pip ${i < p.snowballs ? '' : 'empty'}"></span>`;
       }
-      html += `<span style="font-size:11px;color:#cde7ff;margin-left:4px;">${p.snowballs}/${p.maxSnowballs}</span>`;
+      const hasInf = p.buffs.some((b) => b.id === 'book_infinite');
+      html += `<span style="font-size:11px;color:${hasInf ? '#70e4ff' : '#cde7ff'};margin-left:4px;">${hasInf ? '∞' : `${p.snowballs}/${p.maxSnowballs}`}</span>`;
       this.snowballsEl.innerHTML = html;
+    }
+
+    // Active Pickup Buffs (Ice Cream, 5 Magic Books, Slow debuff)
+    if (this.buffsEl) {
+      if (p.buffs.length === 0) {
+        this.buffsEl.innerHTML = '';
+      } else {
+        this.buffsEl.innerHTML = p.buffs
+          .map(
+            (b) =>
+              `<span class="buff-pill" style="border-color:${b.color};color:${b.color};">${b.icon} ${b.label} ${b.remaining.toFixed(1)}s</span>`
+          )
+          .join('');
+      }
     }
 
     // Top Center Stage / Brawl Info
@@ -605,6 +647,41 @@ export class UIManager {
       this.touchRefillBtnEl.classList.toggle('near-pile', p.nearSnowPile && p.snowballs < p.maxSnowballs);
       this.touchRefillPctEl.textContent = p.refillProgress > 0 ? `${Math.round(p.refillProgress * 100)}%` : '装填';
     }
+  }
+
+  private openItemGuideModal(): void {
+    const slot = this.root.querySelector('#guide-modal-slot');
+    if (!slot) return;
+    slot.innerHTML = `
+      <div class="screen-overlay" style="z-index:40;">
+        <div class="pixel-panel modal-box" style="width:min(680px, 94vw);">
+          <h2>📖 雪地道具与五色魔典图鉴</h2>
+          <div class="item-guide-grid">
+            ${ITEM_KINDS.map((k) => {
+              const it = ITEMS[k];
+              return `
+                <div class="item-guide-row" style="border-color:${it.color}88;">
+                  <img src="./assets/items/${it.id}.png" alt="${it.nameZh}" />
+                  <div>
+                    <div style="font-size:12px;font-weight:800;color:${it.color};">${it.nameZh}</div>
+                    <div style="font-size:11px;color:#d6e9fa;line-height:1.35;margin-top:2px;">${it.desc}</div>
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+          <div style="font-size:11px;color:#9ec1de;line-height:1.6;">
+            <div>版权协议：<a href="${LICENSE_INFO.url}" target="_blank" rel="noopener noreferrer" style="color:#ffd966;">${LICENSE_INFO.name}（${LICENSE_INFO.fullName}）</a></div>
+          </div>
+          <div class="modal-actions">
+            <button class="pixel-btn gold" id="btn-close-guide">知道了!</button>
+          </div>
+        </div>
+      </div>
+    `;
+    slot.querySelector('#btn-close-guide')?.addEventListener('click', () => {
+      slot.innerHTML = '';
+    });
   }
 
   private renderModal(

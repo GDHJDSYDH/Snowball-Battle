@@ -15,6 +15,45 @@ export type ObstacleKind =
 
 export type EnemyKind = 'snow_sprite' | 'yeti' | 'frost_mage' | 'boss_frost_king';
 
+export type MagicBookKind =
+  | 'book_spread'
+  | 'book_infinite'
+  | 'book_slow'
+  | 'book_crit'
+  | 'book_pierce';
+
+export type ItemKind = 'bandage' | 'ice_cream' | 'hot_cocoa' | MagicBookKind;
+
+export interface ItemDef {
+  id: ItemKind;
+  nameZh: string;
+  shortLabel: string;
+  icon: string;
+  desc: string;
+  color: string;
+  duration: number; // 0 for instant consumables
+  isBook: boolean;
+}
+
+export interface PickupItem {
+  id: number;
+  kind: ItemKind;
+  x: number;
+  y: number;
+  life: number;
+  maxLife: number;
+  bobPhase: number;
+}
+
+export interface ActiveBuffInfo {
+  id: string;
+  icon: string;
+  label: string;
+  remaining: number;
+  maxDuration: number;
+  color: string;
+}
+
 export interface CharacterDef {
   id: CharacterId;
   nameZh: string;
@@ -104,6 +143,13 @@ export interface Fighter {
   iaidoHitCount: number;
   iaidoSwingCd: number;
 
+  // Pickup item buffs & debuffs
+  speedBoostTimer: number; // Ice Cream speed boost
+  slowTimer: number; // Slowed by enemy/rival Purple Book
+  activeBook: MagicBookKind | null;
+  bookTimer: number;
+  fullHpNotifyCd: number;
+
   // AI memory
   aiState: 'fight' | 'refill' | 'retreat' | 'chase';
   aiTimer: number;
@@ -131,6 +177,7 @@ export interface Enemy {
   attackCd: number;
   hurtTimer: number;
   invincibleFrames: number;
+  slowTimer: number;
   // Boss specifics
   phase: 1 | 2;
   bossPattern: number;
@@ -160,6 +207,11 @@ export interface Snowball {
   storedVx: number;
   storedVy: number;
   storedVz: number;
+  // Magic book modifiers
+  appliesSlow?: boolean;
+  isCrit?: boolean;
+  pierceLeft?: number;
+  hitIds?: string[];
 }
 
 export interface SlashArc {
@@ -280,6 +332,7 @@ export interface HudSnapshot {
     refillProgress: number;
     alive: boolean;
     respawnTimer: number;
+    buffs: ActiveBuffInfo[];
   };
   stageNum: number;
   stageTotal: number;
@@ -331,4 +384,16 @@ export const GAME_CONST = {
   TESSEL_IAIDO_SWING_CD: 0.24,
   TESSEL_IAIDO_RANGE: 96,
   TESSEL_IAIDO_ARC: Math.PI * 0.78,
+  // Pickup item durations & tuning
+  ICE_CREAM_DURATION: 7.0,
+  ICE_CREAM_SPEED_MULT: 1.42,
+  BOOK_SPREAD_DURATION: 8.0,
+  BOOK_INFINITE_DURATION: 8.0,
+  BOOK_SLOW_DURATION: 9.0,
+  BOOK_SLOW_EFFECT_SECONDS: 4.0,
+  BOOK_CRIT_DURATION: 9.0,
+  BOOK_CRIT_CHANCE: 0.45,
+  BOOK_PIERCE_DURATION: 8.0,
+  ITEM_LIFETIME: 24.0,
+  ITEM_PICKUP_RADIUS: 34,
 } as const;
