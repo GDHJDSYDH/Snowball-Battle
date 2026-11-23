@@ -101,6 +101,7 @@ export class GameEngine {
   private resultTitle = '';
   private resultSummary: string[] = [];
   private aimPreviewAngle: number | null = null;
+  private mobileSnowPileHoldLock = false;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -623,13 +624,23 @@ export class GameEngine {
     // Update VFX (slash arcs, particles, afterimages, footprints, floating texts)
     this.updateEffects(dt);
 
-    // Smooth camera follow player with subtle look-ahead
+    // Smooth camera follow player:
+    // - On mobile touch mode: zero aim look-ahead so tapping anywhere NEVER jolts or oscillates the camera!
+    // - On PC: gentle deadzoned look-ahead toward mouse aim.
     const player = this.fighters.find((f) => f.isPlayer);
     if (player) {
       const viewW = this.viewWidth / this.viewScale;
       const viewH = this.viewHeight / this.viewScale;
-      const lookX = player.alive ? Math.cos(player.aimAngle) * 42 : 0;
-      const lookY = player.alive ? Math.sin(player.aimAngle) * 32 : 0;
+      let lookX = 0;
+      let lookY = 0;
+      if (!this.input.touchMode && player.alive && inputState.hasAimPoint) {
+        const aimDist = Math.hypot(inputState.aimWorldX - player.x, inputState.aimWorldY - player.y);
+        if (aimDist > 85) {
+          const factor = Math.min(1, (aimDist - 85) / 220);
+          lookX = Math.cos(player.aimAngle) * 24 * factor;
+          lookY = Math.sin(player.aimAngle) * 18 * factor;
+        }
+      }
       const targetCamX = Math.max(0, Math.min(Math.max(0, this.map.width - viewW), player.x + lookX - viewW * 0.5));
       const targetCamY = Math.max(0, Math.min(Math.max(0, this.map.height - viewH), player.y + lookY - viewH * 0.5));
       this.cameraX += (targetCamX - this.cameraX) * Math.min(1, dt * 8.5);
@@ -647,10 +658,26 @@ export class GameEngine {
   private updatePlayerFighter(f: Fighter, input: InputState, dt: number): void {
     this.tickFighterTimers(f, dt);
 
+    // Release snow-pile hold lock once finger is lifted from canvas
+    if (!input.touchCanvasHeld && !input.touchCanvasJustDown) {
+      this.mobileSnowPileHoldLock = false;
+    }
+
+    // Mobile special feature: holding directly on a nearby snow pile on screen refills snowballs!
+    let holdingSnowPileOnScreen = false;
+    if (this.input.touchMode && (input.touchCanvasHeld || input.touchCanvasJustDown)) {
+      if (this.isTouchingNearbySnowPile(f, input.aimWorldX, input.aimWorldY)) {
+        if (f.snowballs < f.maxSnowballs || this.mobileSnowPileHoldLock) {
+          holdingSnowPileOnScreen = true;
+          this.mobileSnowPileHoldLock = true;
+        }
+      }
+    }
+
     // Compute aim angle:
     // - PC mouse hover OR Mobile tap-anywhere on screen -> aim directly at that exact world point!
     this.aimPreviewAngle = null;
-    if (input.tapMarkerWorld) {
+    if (input.tapMarkerWorld && !holdingSnowPileOnScreen) {
       // Crisp visual ripple right where the player tapped on mobile!
       this.particles.push({
         x: input.tapMarkerWorld.x,
@@ -669,7 +696,7 @@ export class GameEngine {
       });
     }
 
-    if (input.hasAimPoint) {
+    if (input.hasAimPoint && !holdingSnowPileOnScreen) {
       f.aimAngle = Math.atan2(input.aimWorldY - (f.y - 14), input.aimWorldX - f.x);
     } else if (Math.hypot(input.moveX, input.moveY) > 0.15) {
       f.aimAngle = Math.atan2(input.moveY, input.moveX);
@@ -689,16 +716,37 @@ export class GameEngine {
       tryActivateSkill(f, this.createSkillContext());
     }
 
-    // Snow Refill (Hold R / Mobile Refill for 1.5s near snow pile)
-    this.updateSnowRefill(f, input.refillHeld, dt);
+    // Snow Refill (Hold R / Mobile Refill button / Hold snow pile directly on screen for 1.0s)
+    this.updateSnowRefill(f, input.refillHeld || holdingSnowPileOnScreen, dt);
 
     // Movement (disabled while actively holding snow refill, overridden during dash)
     this.applyFighterVelocity(f, f.isRefilling ? 0 : input.moveX, f.isRefilling ? 0 : input.moveY, dt);
 
-    // Throw Snowball
-    if ((input.throwJustPressed || input.throwHeld) && !f.isRefilling && f.dashTimer <= 0) {
+    // Throw Snowball (suppressed while holding a snow pile on screen until finger lifts!)
+    if (
+      (input.throwJustPressed || input.throwHeld) &&
+      !holdingSnowPileOnScreen &&
+      !this.mobileSnowPileHoldLock &&
+      !f.isRefilling &&
+      f.dashTimer <= 0
+    ) {
       this.tryFighterThrow(f);
     }
+  }
+
+  private isTouchingNearbySnowPile(f: Fighter, worldX: number, worldY: number): boolean {
+    for (const obs of this.map.obstacles) {
+      if (!obs.isSnowPile) continue;
+      // Player must be within refill range of this snow pile
+      if (Math.hypot(f.x - obs.x, f.y - obs.y) > GAME_CONST.REFILL_RADIUS) continue;
+      // Finger world position hits the visual snow pile sprite (generous thumb hitbox)
+      const dx = worldX - obs.x;
+      const dy = worldY - (obs.y - 22);
+      if (Math.hypot(dx, dy) <= 68) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private updateAiFighter(ai: Fighter, dt: number): void {

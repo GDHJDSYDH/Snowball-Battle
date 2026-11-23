@@ -258,7 +258,7 @@ export class Renderer25D {
             ctx.save();
             ctx.font = 'bold 12px "Microsoft YaHei", monospace';
             ctx.textAlign = 'center';
-            const label = '长按 R / 装填 (1s)';
+            const label = '长按 R / 按住雪堆 (1s)';
             const tw = ctx.measureText(label).width + 12;
             ctx.fillStyle = 'rgba(10, 24, 42, 0.82)';
             ctx.fillRect(obs.x - tw * 0.5, obs.y - obs.drawHeight - 16, tw, 20);

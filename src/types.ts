@@ -365,8 +365,8 @@ export const GAME_CONST = {
   PLAYER_MAX_SNOWBALLS: 6,
   SNOWBALL_DAMAGE: 1,
   HIT_INVINCIBLE_FRAMES: 30, // Exactly 30 frames!
-  REFILL_HOLD_SECONDS: 1.0, // Hold R / button for 1.0s
-  REFILL_RADIUS: 82,
+  REFILL_HOLD_SECONDS: 1.0, // Hold R / button / snow pile for 1.0s
+  REFILL_RADIUS: 92,
   DASH_CD: 3.0, // 3s CD
   DASH_DURATION: 0.18,
   DASH_SPEED: 620,

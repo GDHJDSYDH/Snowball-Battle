@@ -4,6 +4,8 @@ export interface InputState {
   aimWorldX: number;
   aimWorldY: number;
   hasAimPoint: boolean;
+  touchCanvasHeld: boolean;
+  touchCanvasJustDown: boolean;
   throwHeld: boolean;
   throwJustPressed: boolean;
   dashJustPressed: boolean;
@@ -200,6 +202,15 @@ export class InputManager {
     this.canvas.addEventListener('contextmenu', (e) => {
       e.preventDefault();
     });
+
+    // Prevent mobile browser long-press haptic vibration, text-selection buzz, and scroll bounce on canvas
+    this.canvas.addEventListener(
+      'touchstart',
+      (e) => {
+        e.preventDefault();
+      },
+      { passive: false }
+    );
   }
 
   public sample(cameraX: number, cameraY: number, viewScale: number): InputState {
@@ -234,6 +245,8 @@ export class InputManager {
       aimWorldX,
       aimWorldY,
       hasAimPoint,
+      touchCanvasHeld: this.touchShootHeld || (this.touchMode && this.mouseLeftHeld),
+      touchCanvasJustDown: this.pendingTouchAim,
       throwHeld: this.mouseLeftHeld || this.keys.has('KeyJ') || this.touchShootHeld,
       throwJustPressed: this.pendingThrow,
       dashJustPressed: this.pendingDash,

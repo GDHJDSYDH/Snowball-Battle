@@ -155,7 +155,7 @@ export class UIManager {
           <div class="start-bar">
             <div class="controls-hint">
               <div><b>电脑：</b><kbd>WASD</kbd>/<kbd>方向键</kbd>移动 · <kbd>左键</kbd>瞄准投掷 · <kbd>Z</kbd>冲刺 · <kbd>R</kbd>雪堆旁长按1s补球 · <kbd>X</kbd>/<kbd>E</kbd>/<kbd>右键</kbd>技能</div>
-              <div><b>手机：</b>左侧摇杆移动 · <b>点击/按住屏幕任意位置</b>直接朝该处发射雪球 · 右下角 冲刺 / 技能 / 雪堆旁长按1s装填</div>
+              <div><b>手机：</b>左侧摇杆移动 · <b>点击屏幕任意处</b>朝该方向发射雪球 · 靠近雪堆<b>直接按住雪堆或装填键1s</b>补满雪球</div>
             </div>
             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
               <button class="pixel-btn secondary" id="btn-item-guide" style="font-size:13px;padding:10px 14px;">
