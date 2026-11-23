@@ -109,7 +109,7 @@ export class UIManager {
           <div>
             <div class="section-label">
               <span>1. 选择出战角色</span>
-              <span style="color:#9ec1de;font-size:11px;">血量 5♥ · 雪球上限 5 · 冲刺 CD 3s</span>
+              <span style="color:#9ec1de;font-size:11px;">血量 5♥ · 雪球上限 6 · 补球 1s · 冲刺 CD 3s</span>
             </div>
             <div class="char-grid" id="char-grid">
               ${CHARACTER_LIST.map(
@@ -154,8 +154,8 @@ export class UIManager {
 
           <div class="start-bar">
             <div class="controls-hint">
-              <div><b>电脑：</b><kbd>WASD</kbd>/<kbd>方向键</kbd>移动 · <kbd>左键</kbd>瞄准投掷 · <kbd>Z</kbd>冲刺 · <kbd>R</kbd>雪堆旁长按1.5s补球 · <kbd>X</kbd>/<kbd>E</kbd>/<kbd>右键</kbd>技能</div>
-              <div><b>手机：</b>左侧虚拟摇杆移动 · 右侧按钮拖动瞄准投掷 / 冲刺 / 技能 / 雪堆旁长按装填</div>
+              <div><b>电脑：</b><kbd>WASD</kbd>/<kbd>方向键</kbd>移动 · <kbd>左键</kbd>瞄准投掷 · <kbd>Z</kbd>冲刺 · <kbd>R</kbd>雪堆旁长按1s补球 · <kbd>X</kbd>/<kbd>E</kbd>/<kbd>右键</kbd>技能</div>
+              <div><b>手机：</b>左侧摇杆移动 · <b>点击/按住屏幕任意位置</b>直接朝该处发射雪球 · 右下角 冲刺 / 技能 / 雪堆旁长按1s装填</div>
             </div>
             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
               <button class="pixel-btn secondary" id="btn-item-guide" style="font-size:13px;padding:10px 14px;">
@@ -261,10 +261,6 @@ export class UIManager {
             <div class="joystick-knob" id="joy-knob"></div>
           </div>
           <div class="touch-actions">
-            <button class="touch-btn touch-btn-throw" id="t-throw">
-              <span style="font-size:20px;">❄️</span>
-              <span>投掷</span>
-            </button>
             <button class="touch-btn touch-btn-skill" id="t-skill">
               <span id="t-skill-icon" style="font-size:20px;">${charDef.skillIcon}</span>
               <span>技能</span>
@@ -298,7 +294,7 @@ export class UIManager {
           <div class="ability-slot" id="pc-refill-slot">
             <span class="ability-key">长按R</span>
             <span class="ability-icon">⛄</span>
-            <span class="ability-name">补球1.5s</span>
+            <span class="ability-name">补球1s</span>
             <div class="ability-cd-mask" id="pc-refill-cd" style="display:none;"></div>
           </div>
           <div class="ability-slot ready" id="pc-skill-slot">
@@ -422,60 +418,27 @@ export class UIManager {
     joyZone?.addEventListener('pointerup', endJoy);
     joyZone?.addEventListener('pointercancel', endJoy);
 
-    // 2. Throw Button (Tap = Auto-Aim Throw; Hold + Drag = Aim Trajectory & Release to Throw!)
-    const throwBtn = this.root.querySelector<HTMLElement>('#t-throw');
-    let throwPointerId: number | null = null;
-    let throwStartX = 0;
-    let throwStartY = 0;
-    let didDragAim = false;
-
-    throwBtn?.addEventListener('pointerdown', (e) => {
-      e.preventDefault();
-      throwPointerId = e.pointerId;
-      throwBtn.setPointerCapture(e.pointerId);
-      throwBtn.classList.add('pressed');
-      throwStartX = e.clientX;
-      throwStartY = e.clientY;
-      didDragAim = false;
-      this.engine.input.setTouchThrowDrag(true, null, true);
-    });
-    throwBtn?.addEventListener('pointermove', (e) => {
-      if (e.pointerId !== throwPointerId) return;
-      e.preventDefault();
-      const dx = e.clientX - throwStartX;
-      const dy = e.clientY - throwStartY;
-      if (Math.hypot(dx, dy) > 14) {
-        didDragAim = true;
-        this.engine.input.setTouchThrowDrag(true, Math.atan2(dy, dx), false);
-      }
-    });
-    const endThrow = (e: PointerEvent) => {
-      if (e.pointerId !== throwPointerId) return;
-      throwPointerId = null;
-      throwBtn?.classList.remove('pressed');
-      this.engine.input.setTouchThrowDrag(false, null, didDragAim);
-    };
-    throwBtn?.addEventListener('pointerup', endThrow);
-    throwBtn?.addEventListener('pointercancel', endThrow);
-
-    // 3. Dash Button
+    // 2. Dash Button (Throwing is now handled directly by tapping anywhere on the screen!)
     const dashBtn = this.root.querySelector<HTMLElement>('#t-dash');
     dashBtn?.addEventListener('pointerdown', (e) => {
       e.preventDefault();
+      e.stopPropagation();
       this.engine.input.triggerTouchDash();
     });
 
-    // 4. Special Skill Button
+    // 3. Special Skill Button
     const skillBtn = this.root.querySelector<HTMLElement>('#t-skill');
     skillBtn?.addEventListener('pointerdown', (e) => {
       e.preventDefault();
+      e.stopPropagation();
       this.engine.input.triggerTouchSkill();
     });
 
-    // 5. Hold-to-Refill Button (1.5s near snow pile!)
+    // 4. Hold-to-Refill Button (1.0s near snow pile!)
     const refillBtn = this.root.querySelector<HTMLElement>('#t-refill');
     refillBtn?.addEventListener('pointerdown', (e) => {
       e.preventDefault();
+      e.stopPropagation();
       refillBtn.setPointerCapture(e.pointerId);
       refillBtn.classList.add('pressed');
       this.engine.input.setTouchRefill(true);

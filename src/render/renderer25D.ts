@@ -258,7 +258,7 @@ export class Renderer25D {
             ctx.save();
             ctx.font = 'bold 12px "Microsoft YaHei", monospace';
             ctx.textAlign = 'center';
-            const label = '按住 R 装填雪球';
+            const label = '长按 R / 装填 (1s)';
             const tw = ctx.measureText(label).width + 12;
             ctx.fillStyle = 'rgba(10, 24, 42, 0.82)';
             ctx.fillRect(obs.x - tw * 0.5, obs.y - obs.drawHeight - 16, tw, 20);
@@ -914,10 +914,11 @@ export class Renderer25D {
     state: RenderState,
     player: Fighter
   ): void {
-    const mmW = width < 640 ? 96 : 132;
+    const isNarrow = width < 680;
+    const mmW = isNarrow ? 74 : 132;
     const mmH = Math.round((mmW * state.mapHeight) / state.mapWidth);
-    const x0 = width - mmW - 14;
-    const y0 = 60;
+    const x0 = width - mmW - 10;
+    const y0 = isNarrow ? 122 : 60;
 
     ctx.save();
     ctx.fillStyle = 'rgba(10, 22, 38, 0.72)';

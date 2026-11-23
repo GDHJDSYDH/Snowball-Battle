@@ -647,28 +647,32 @@ export class GameEngine {
   private updatePlayerFighter(f: Fighter, input: InputState, dt: number): void {
     this.tickFighterTimers(f, dt);
 
-    // Compute aim angle
-    if (input.touchAimActive) {
-      f.aimAngle = input.touchAimAngle;
-      this.aimPreviewAngle = input.touchAimAngle;
-    } else {
-      this.aimPreviewAngle = null;
-      if (input.hasMouseAim) {
-        f.aimAngle = Math.atan2(input.aimWorldY - (f.y - 14), input.aimWorldX - f.x);
-      } else if (Math.hypot(input.moveX, input.moveY) > 0.15) {
-        // Mobile auto-aim assist toward nearest threat when firing, else face movement
-        const nearest = this.findNearestHostile(f, 440);
-        if (nearest && (input.throwHeld || input.throwJustPressed)) {
-          f.aimAngle = Math.atan2(nearest.y - f.y, nearest.x - f.x);
-        } else {
-          f.aimAngle = Math.atan2(input.moveY, input.moveX);
-        }
-      } else if (input.throwHeld || input.throwJustPressed) {
-        const nearest = this.findNearestHostile(f, 480);
-        if (nearest) {
-          f.aimAngle = Math.atan2(nearest.y - f.y, nearest.x - f.x);
-        }
-      }
+    // Compute aim angle:
+    // - PC mouse hover OR Mobile tap-anywhere on screen -> aim directly at that exact world point!
+    this.aimPreviewAngle = null;
+    if (input.tapMarkerWorld) {
+      // Crisp visual ripple right where the player tapped on mobile!
+      this.particles.push({
+        x: input.tapMarkerWorld.x,
+        y: input.tapMarkerWorld.y,
+        z: 2,
+        vx: 0,
+        vy: 0,
+        vz: 0,
+        size: 16,
+        color: '#6ce5ff',
+        alpha: 0.9,
+        life: 0.22,
+        maxLife: 0.22,
+        gravity: 0,
+        shape: 'ring',
+      });
+    }
+
+    if (input.hasAimPoint) {
+      f.aimAngle = Math.atan2(input.aimWorldY - (f.y - 14), input.aimWorldX - f.x);
+    } else if (Math.hypot(input.moveX, input.moveY) > 0.15) {
+      f.aimAngle = Math.atan2(input.moveY, input.moveX);
     }
 
     this.updateFighterFacing(f, input.moveX, input.moveY);
@@ -817,7 +821,7 @@ export class GameEngine {
         this.floatingTexts.push({
           x: f.x,
           y: f.y - 48,
-          text: '❄️ 雪球已补满 (5/5)',
+          text: `❄️ 雪球已补满 (${f.maxSnowballs}/${f.maxSnowballs})`,
           color: '#8ce6ff',
           life: 1.0,
           maxLife: 1.0,
@@ -977,7 +981,7 @@ export class GameEngine {
         this.floatingTexts.push({
           x: f.x,
           y: f.y - 46,
-          text: '没雪球啦! 去雪堆按住R补球',
+          text: this.input.touchMode ? '没雪球啦! 去雪堆长按装填' : '没雪球啦! 去雪堆按住R补球',
           color: '#ffd166',
           life: 1.0,
           maxLife: 1.0,

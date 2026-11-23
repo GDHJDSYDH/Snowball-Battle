@@ -3,15 +3,14 @@ export interface InputState {
   moveY: number;
   aimWorldX: number;
   aimWorldY: number;
-  hasMouseAim: boolean;
-  touchAimActive: boolean;
-  touchAimAngle: number;
+  hasAimPoint: boolean;
   throwHeld: boolean;
   throwJustPressed: boolean;
   dashJustPressed: boolean;
   skillJustPressed: boolean;
   refillHeld: boolean;
   pauseJustPressed: boolean;
+  tapMarkerWorld: { x: number; y: number } | null;
 }
 
 export class InputManager {
@@ -21,19 +20,24 @@ export class InputManager {
   private mouseLeftHeld = false;
   private hasMouseMoved = false;
 
+  // Multi-touch tap-anywhere shooting on canvas
+  private activeTouchShootId: number | null = null;
+  private touchShootScreenX = 0;
+  private touchShootScreenY = 0;
+  private touchShootHeld = false;
+  private pendingTouchAim = false;
+  private pendingTapMarker = false;
+
   // One-shot latches cleared each fixed step
   private pendingThrow = false;
   private pendingDash = false;
   private pendingSkill = false;
   private pendingPause = false;
 
-  // Mobile virtual controls state
+  // Mobile virtual controls state (joystick + refill)
   public touchMode: boolean;
   private joyX = 0;
   private joyY = 0;
-  private touchThrowHeld = false;
-  private touchAimActive = false;
-  private touchAimAngle = 0;
   private touchRefillHeld = false;
 
   private canvas: HTMLCanvasElement;
@@ -69,24 +73,15 @@ export class InputManager {
     this.pendingSkill = true;
   }
 
-  public setTouchThrowDrag(active: boolean, angle: number | null, fireNow = false): void {
-    this.touchAimActive = active;
-    this.touchThrowHeld = active && angle === null;
-    if (angle !== null) {
-      this.touchAimAngle = angle;
-    }
-    if (fireNow) {
-      this.pendingThrow = true;
-    }
-  }
-
   public resetAll(): void {
     this.keys.clear();
     this.mouseLeftHeld = false;
+    this.activeTouchShootId = null;
+    this.touchShootHeld = false;
+    this.pendingTouchAim = false;
+    this.pendingTapMarker = false;
     this.joyX = 0;
     this.joyY = 0;
-    this.touchThrowHeld = false;
-    this.touchAimActive = false;
     this.touchRefillHeld = false;
     this.pendingThrow = false;
     this.pendingDash = false;
@@ -122,33 +117,85 @@ export class InputManager {
     window.addEventListener('blur', () => {
       this.keys.clear();
       this.mouseLeftHeld = false;
+      this.activeTouchShootId = null;
+      this.touchShootHeld = false;
     });
 
-    this.canvas.addEventListener('mousemove', (e) => {
+    // Unified Pointer Events on Canvas:
+    // - Mouse: hover aims, left click shoots, right click triggers skill
+    // - Touch (or mouse when touchMode is toggled on): tap/hold ANYWHERE on screen shoots straight toward that spot!
+    this.canvas.addEventListener('pointerdown', (e) => {
       const rect = this.canvas.getBoundingClientRect();
-      this.mouseScreenX = e.clientX - rect.left;
-      this.mouseScreenY = e.clientY - rect.top;
-      this.hasMouseMoved = true;
+      const sx = e.clientX - rect.left;
+      const sy = e.clientY - rect.top;
+
+      if (e.pointerType === 'mouse') {
+        this.mouseScreenX = sx;
+        this.mouseScreenY = sy;
+        this.hasMouseMoved = true;
+        if (e.button === 0) {
+          this.mouseLeftHeld = true;
+          this.pendingThrow = true;
+          if (this.touchMode) {
+            this.touchShootScreenX = sx;
+            this.touchShootScreenY = sy;
+            this.pendingTouchAim = true;
+            this.pendingTapMarker = true;
+          }
+        } else if (e.button === 2) {
+          this.pendingSkill = true;
+        }
+        return;
+      }
+
+      // Touch / Pen tap anywhere on the open game canvas -> aim & throw directly at tapped point!
+      e.preventDefault();
+      this.touchMode = true;
+      this.activeTouchShootId = e.pointerId;
+      this.touchShootScreenX = sx;
+      this.touchShootScreenY = sy;
+      this.touchShootHeld = true;
+      this.pendingTouchAim = true;
+      this.pendingTapMarker = true;
+      this.pendingThrow = true;
     });
 
-    this.canvas.addEventListener('mousedown', (e) => {
+    this.canvas.addEventListener('pointermove', (e) => {
       const rect = this.canvas.getBoundingClientRect();
-      this.mouseScreenX = e.clientX - rect.left;
-      this.mouseScreenY = e.clientY - rect.top;
-      this.hasMouseMoved = true;
-      if (e.button === 0) {
-        this.mouseLeftHeld = true;
-        this.pendingThrow = true;
-      } else if (e.button === 2) {
-        this.pendingSkill = true;
+      const sx = e.clientX - rect.left;
+      const sy = e.clientY - rect.top;
+
+      if (e.pointerType === 'mouse') {
+        this.mouseScreenX = sx;
+        this.mouseScreenY = sy;
+        this.hasMouseMoved = true;
+        if (this.touchMode && this.mouseLeftHeld) {
+          this.touchShootScreenX = sx;
+          this.touchShootScreenY = sy;
+        }
+        return;
+      }
+
+      if (e.pointerId === this.activeTouchShootId) {
+        e.preventDefault();
+        this.touchShootScreenX = sx;
+        this.touchShootScreenY = sy;
       }
     });
 
-    window.addEventListener('mouseup', (e) => {
-      if (e.button === 0) {
-        this.mouseLeftHeld = false;
+    const endCanvasPointer = (e: PointerEvent) => {
+      if (e.pointerType === 'mouse') {
+        if (e.button === 0) this.mouseLeftHeld = false;
+        return;
       }
-    });
+      if (e.pointerId === this.activeTouchShootId) {
+        this.activeTouchShootId = null;
+        this.touchShootHeld = false;
+      }
+    };
+
+    window.addEventListener('pointerup', endCanvasPointer);
+    window.addEventListener('pointercancel', endCanvasPointer);
 
     this.canvas.addEventListener('contextmenu', (e) => {
       e.preventDefault();
@@ -172,29 +219,36 @@ export class InputManager {
       my = this.joyY;
     }
 
-    const aimWorldX = cameraX + this.mouseScreenX / viewScale;
-    const aimWorldY = cameraY + this.mouseScreenY / viewScale;
+    const useTouchAim = this.touchShootHeld || this.pendingTouchAim;
+    const screenX = useTouchAim ? this.touchShootScreenX : this.mouseScreenX;
+    const screenY = useTouchAim ? this.touchShootScreenY : this.mouseScreenY;
+    const aimWorldX = cameraX + screenX / viewScale;
+    const aimWorldY = cameraY + screenY / viewScale;
+    const hasAimPoint = useTouchAim || (this.hasMouseMoved && !this.touchMode);
+
+    const tapMarkerWorld = this.pendingTapMarker ? { x: aimWorldX, y: aimWorldY } : null;
 
     const state: InputState = {
       moveX: mx,
       moveY: my,
       aimWorldX,
       aimWorldY,
-      hasMouseAim: this.hasMouseMoved && !this.touchMode,
-      touchAimActive: this.touchAimActive,
-      touchAimAngle: this.touchAimAngle,
-      throwHeld: this.mouseLeftHeld || this.keys.has('KeyJ') || this.touchThrowHeld,
+      hasAimPoint,
+      throwHeld: this.mouseLeftHeld || this.keys.has('KeyJ') || this.touchShootHeld,
       throwJustPressed: this.pendingThrow,
       dashJustPressed: this.pendingDash,
       skillJustPressed: this.pendingSkill,
       refillHeld: this.keys.has('KeyR') || this.touchRefillHeld,
       pauseJustPressed: this.pendingPause,
+      tapMarkerWorld,
     };
 
     this.pendingThrow = false;
     this.pendingDash = false;
     this.pendingSkill = false;
     this.pendingPause = false;
+    this.pendingTouchAim = false;
+    this.pendingTapMarker = false;
 
     return state;
   }
