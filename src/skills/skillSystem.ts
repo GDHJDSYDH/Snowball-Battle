@@ -245,7 +245,6 @@ export function tryActivateSkill(fighter: Fighter, ctx: SkillContext): boolean {
 }
 
 export function normalizeAngle(a: number): number {
-  while (a > Math.PI) a -= Math.PI * 2;
-  while (a < -Math.PI) a += Math.PI * 2;
-  return a;
+  if (!Number.isFinite(a)) return 0;
+  return Math.atan2(Math.sin(a), Math.cos(a));
 }

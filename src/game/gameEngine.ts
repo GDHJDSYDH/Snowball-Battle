@@ -3,6 +3,7 @@ import { GameAssets } from '../assets/assetLoader';
 import { sound } from '../audio/soundEngine';
 import { ADVENTURE_STAGES, CHARACTERS, CHARACTER_LIST } from '../data/characters';
 import { ITEMS, pickWeightedRandomItem } from '../data/items';
+import { CrashContextSnapshot, crashReporter } from '../debug/crashReporter';
 import { InputManager, InputState } from '../input/inputManager';
 import { getFighterSpriteFrame, Renderer25D } from '../render/renderer25D';
 import { SkillContext, tryActivateSkill } from '../skills/skillSystem';
@@ -102,6 +103,7 @@ export class GameEngine {
   private resultSummary: string[] = [];
   private aimPreviewAngle: number | null = null;
   private mobileSnowPileHoldLock = false;
+  private loopHaltedByError = false;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -123,28 +125,66 @@ export class GameEngine {
   }
 
   public startLoop(): void {
+    this.loopHaltedByError = false;
     this.lastTimestamp = performance.now();
     const tick = (now: number) => {
-      const rawDt = Math.min(0.05, Math.max(0, (now - this.lastTimestamp) / 1000));
-      this.lastTimestamp = now;
+      if (this.loopHaltedByError) return;
+      try {
+        const rawDt = Math.min(0.05, Math.max(0, (now - this.lastTimestamp) / 1000));
+        this.lastTimestamp = now;
 
-      this.accumulator += rawDt;
-      while (this.accumulator >= GAME_CONST.FIXED_DT) {
-        this.fixedUpdate(GAME_CONST.FIXED_DT);
-        this.accumulator -= GAME_CONST.FIXED_DT;
-      }
+        this.accumulator += rawDt;
+        let steps = 0;
+        while (this.accumulator >= GAME_CONST.FIXED_DT && steps < 5) {
+          this.fixedUpdate(GAME_CONST.FIXED_DT);
+          this.accumulator -= GAME_CONST.FIXED_DT;
+          steps++;
+        }
+        if (steps >= 5) this.accumulator = 0;
 
-      this.render();
+        this.render();
 
-      this.hudThrottle += rawDt;
-      if (this.hudThrottle >= 0.05) {
-        this.hudThrottle = 0;
-        this.emitHud();
+        this.hudThrottle += rawDt;
+        if (this.hudThrottle >= 0.05) {
+          this.hudThrottle = 0;
+          this.emitHud();
+        }
+      } catch (err) {
+        this.loopHaltedByError = true;
+        crashReporter.report('gameLoop', err);
+        return;
       }
 
       this.rafId = requestAnimationFrame(tick);
     };
     this.rafId = requestAnimationFrame(tick);
+  }
+
+  public pauseForCrash(): void {
+    this.loopHaltedByError = true;
+    cancelAnimationFrame(this.rafId);
+  }
+
+  public resumeAfterCrash(): void {
+    if (!this.loopHaltedByError) return;
+    this.accumulator = 0;
+    this.startLoop();
+  }
+
+  public getCrashContext(): CrashContextSnapshot {
+    const p = this.fighters.find((f) => f.isPlayer);
+    return {
+      screen: this.screen,
+      mode: `${this.selectedMode}${this.selectedMode === 'brawl' ? `/${this.selectedBrawlSubMode}` : ''}`,
+      stage: `${this.stageIndex + 1} (wave ${this.waveIndex + 1})`,
+      charId: p?.charId ?? this.selectedChar,
+      hp: p ? `${p.hp}/${p.maxHp} (alive=${p.alive})` : 'none',
+      snowballs: p ? `${p.snowballs}/${p.maxSnowballs} book=${p.activeBook ?? 'none'}` : 'none',
+      skillState: p
+        ? `cd=${p.skillCd.toFixed(1)} active=${p.skillActiveTimer.toFixed(1)} shield=${p.iceShieldTimer.toFixed(1)} timeFreeze=${this.timeFreezeTimer.toFixed(1)}`
+        : 'none',
+      entities: `fighters=${this.fighters.length} enemies=${this.enemies.length} snowballs=${this.snowballs.length} items=${this.pickupItems.length} particles=${this.particles.length}`,
+    };
   }
 
   public destroy(): void {
@@ -154,8 +194,8 @@ export class GameEngine {
 
   private handleResize(): void {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    this.viewWidth = window.innerWidth;
-    this.viewHeight = window.innerHeight;
+    this.viewWidth = Math.max(1, window.innerWidth || 1);
+    this.viewHeight = Math.max(1, window.innerHeight || 1);
     this.canvas.width = Math.round(this.viewWidth * dpr);
     this.canvas.height = Math.round(this.viewHeight * dpr);
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -197,6 +237,7 @@ export class GameEngine {
   }
 
   public startNewGame(charId: CharacterId, mode: GameMode, brawlSubMode: BrawlSubMode): void {
+    crashReporter.logEvent(`StartGame char=${charId} mode=${mode}/${brawlSubMode}`);
     sound.unlock();
     sound.startBgm();
     this.selectedChar = charId;
@@ -713,7 +754,9 @@ export class GameEngine {
 
     // Special Skill (X / E / Right-Click / Mobile Skill)
     if (input.skillJustPressed) {
-      tryActivateSkill(f, this.createSkillContext());
+      if (tryActivateSkill(f, this.createSkillContext())) {
+        crashReporter.logEvent(`PlayerSkill char=${f.charId}`);
+      }
     }
 
     // Snow Refill (Hold R / Mobile Refill button / Hold snow pile directly on screen for 1.0s)
@@ -759,7 +802,9 @@ export class GameEngine {
       this.triggerDash(ai, decision.moveX || Math.cos(ai.aimAngle), decision.moveY || Math.sin(ai.aimAngle));
     }
     if (decision.wantSkill) {
-      tryActivateSkill(ai, this.createSkillContext());
+      if (tryActivateSkill(ai, this.createSkillContext())) {
+        crashReporter.logEvent(`AISkill char=${ai.charId}`);
+      }
     }
     this.updateSnowRefill(ai, decision.wantRefill, dt);
     this.applyFighterVelocity(ai, ai.isRefilling ? 0 : decision.moveX, ai.isRefilling ? 0 : decision.moveY, dt);
@@ -943,9 +988,9 @@ export class GameEngine {
     const oldY = f.y;
     this.integrateActorMovement(f, dt, true);
 
-    // Leave footprints in snow while moving
+    // Leave footprints in snow while moving (capped to prevent unbounded growth)
     const moved = Math.hypot(f.x - oldX, f.y - oldY);
-    if (moved > 1.2 && !onIce && Math.random() < 0.22) {
+    if (moved > 1.2 && !onIce && Math.random() < 0.22 && this.footprints.length < 140) {
       this.footprints.push({
         x: f.x + (Math.random() - 0.5) * 8,
         y: f.y + 3,
@@ -1727,7 +1772,8 @@ export class GameEngine {
   }
 
   private checkBrawlProgress(dt: number): void {
-    const player = this.fighters.find((f) => f.isPlayer)!;
+    const player = this.fighters.find((f) => f.isPlayer);
+    if (!player) return;
 
     if (this.selectedBrawlSubMode === 'elimination') {
       const aliveFighters = this.fighters.filter((f) => f.alive);
@@ -1823,7 +1869,11 @@ export class GameEngine {
   }
 
   public spawnBurst(x: number, y: number, z: number, color: string, count: number, speed = 130): void {
-    for (let i = 0; i < count; i++) {
+    // Hard cap particles so rapid skill/book combos never exhaust mobile memory
+    const maxParticles = 320;
+    const room = Math.max(0, maxParticles - this.particles.length);
+    const actualCount = Math.min(count, room);
+    for (let i = 0; i < actualCount; i++) {
       const a = Math.random() * Math.PI * 2;
       const spd = speed * (0.35 + Math.random() * 0.75);
       this.particles.push({
@@ -1959,7 +2009,7 @@ export class GameEngine {
     const p = this.fighters.find((f) => f.isPlayer);
     const charDef = CHARACTERS[p ? p.charId : this.selectedChar];
     const bossEntity = this.enemies.find((e) => e.alive && e.kind === 'boss_frost_king');
-    const stageCfg = ADVENTURE_STAGES[this.stageIndex];
+    const stageCfg = ADVENTURE_STAGES[this.stageIndex] ?? ADVENTURE_STAGES[0];
 
     const buffs: ActiveBuffInfo[] = [];
     if (p) {

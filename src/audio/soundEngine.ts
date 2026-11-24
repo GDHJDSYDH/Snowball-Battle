@@ -1,9 +1,15 @@
 /**
  * Procedural 8-bit/16-bit Web Audio Sound & Winter BGM Synthesizer
- * Zero external audio files required — crisp, instant-loading, mobile-safe.
+ * Hardened for mobile Safari / Android Chrome / WebViews:
+ * - Single shared reusable noise AudioBuffer (eliminates repeated allocations & tab OOM crashes)
+ * - Explicit node cleanup on `onended` + concurrent voice cap
+ * - All audio calls wrapped in try/catch so suspended/interrupted AudioContext can NEVER crash the game!
  */
 class SoundEngine {
   private ctx: AudioContext | null = null;
+  private noiseBuffer: AudioBuffer | null = null;
+  private activeVoices = 0;
+  private readonly maxVoices = 14;
   private muted = false;
   private bgmTimer: number | null = null;
   private bgmStep = 0;
@@ -24,20 +30,36 @@ class SoundEngine {
   }
 
   public unlock(): void {
-    if (!this.ctx) {
-      const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      if (AudioCtx) {
-        this.ctx = new AudioCtx();
+    try {
+      if (!this.ctx) {
+        const AudioCtx =
+          window.AudioContext ||
+          (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+        if (AudioCtx) {
+          this.ctx = new AudioCtx();
+        }
       }
-    }
-    if (this.ctx && this.ctx.state === 'suspended') {
-      this.ctx.resume().catch(() => {});
+      if (this.ctx && (this.ctx.state === 'suspended' || (this.ctx.state as string) === 'interrupted')) {
+        this.ctx.resume().catch(() => {});
+      }
+      if (this.ctx && !this.noiseBuffer) {
+        const len = Math.max(1, Math.floor(this.ctx.sampleRate * 0.4));
+        const buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+        const data = buf.getChannelData(0);
+        for (let i = 0; i < len; i++) {
+          data[i] = Math.random() * 2 - 1;
+        }
+        this.noiseBuffer = buf;
+      }
+    } catch {
+      // Never let audio initialization crash gameplay
     }
   }
 
   private getCtx(): AudioContext | null {
     if (this.muted) return null;
     this.unlock();
+    if (!this.ctx || this.ctx.state !== 'running') return null;
     return this.ctx;
   }
 
@@ -49,51 +71,83 @@ class SoundEngine {
     volume = 0.12,
     delay = 0
   ): void {
+    if (this.activeVoices >= this.maxVoices) return;
     const ctx = this.getCtx();
     if (!ctx) return;
-    const t = ctx.currentTime + delay;
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = type;
-    osc.frequency.setValueAtTime(freq, t);
-    if (endFreq !== freq) {
-      osc.frequency.exponentialRampToValueAtTime(Math.max(20, endFreq), t + duration);
+    try {
+      const safeDur = Math.max(0.02, duration);
+      const safeVol = Math.max(0.002, volume);
+      const t = Math.max(ctx.currentTime, ctx.currentTime + Math.max(0, delay));
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(Math.max(20, freq), t);
+      if (endFreq !== freq) {
+        osc.frequency.exponentialRampToValueAtTime(Math.max(20, endFreq), t + safeDur);
+      }
+      gain.gain.setValueAtTime(safeVol, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + safeDur);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      this.activeVoices++;
+      osc.onended = () => {
+        this.activeVoices = Math.max(0, this.activeVoices - 1);
+        try {
+          osc.disconnect();
+          gain.disconnect();
+        } catch {
+          // Ignore disconnect errors
+        }
+      };
+
+      osc.start(t);
+      osc.stop(t + safeDur + 0.015);
+    } catch {
+      // Never propagate audio errors to game loop
     }
-    gain.gain.setValueAtTime(volume, t);
-    gain.gain.exponentialRampToValueAtTime(0.001, t + duration);
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start(t);
-    osc.stop(t + duration + 0.01);
   }
 
   private playNoise(duration: number, volume = 0.12, highpass = 800, delay = 0): void {
+    if (this.activeVoices >= this.maxVoices) return;
     const ctx = this.getCtx();
-    if (!ctx) return;
-    const t = ctx.currentTime + delay;
-    const bufSize = Math.max(1, Math.floor(ctx.sampleRate * duration));
-    const buf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
-    const data = buf.getChannelData(0);
-    for (let i = 0; i < bufSize; i++) {
-      data[i] = Math.random() * 2 - 1;
+    if (!ctx || !this.noiseBuffer) return;
+    try {
+      const safeDur = Math.min(0.38, Math.max(0.02, duration));
+      const safeVol = Math.max(0.002, volume);
+      const t = Math.max(ctx.currentTime, ctx.currentTime + Math.max(0, delay));
+      const src = ctx.createBufferSource();
+      src.buffer = this.noiseBuffer;
+
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.setValueAtTime(Math.max(60, highpass), t);
+      filter.Q.setValueAtTime(1.2, t);
+
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(safeVol, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + safeDur);
+
+      src.connect(filter);
+      filter.connect(gain);
+      gain.connect(ctx.destination);
+
+      this.activeVoices++;
+      src.onended = () => {
+        this.activeVoices = Math.max(0, this.activeVoices - 1);
+        try {
+          src.disconnect();
+          filter.disconnect();
+          gain.disconnect();
+        } catch {
+          // Ignore disconnect errors
+        }
+      };
+
+      src.start(t, 0, safeDur + 0.01);
+    } catch {
+      // Never propagate audio errors to game loop
     }
-    const src = ctx.createBufferSource();
-    src.buffer = buf;
-
-    const filter = ctx.createBiquadFilter();
-    filter.type = 'bandpass';
-    filter.frequency.setValueAtTime(highpass, t);
-    filter.Q.setValueAtTime(1.2, t);
-
-    const gain = ctx.createGain();
-    gain.gain.setValueAtTime(volume, t);
-    gain.gain.exponentialRampToValueAtTime(0.001, t + duration);
-
-    src.connect(filter);
-    filter.connect(gain);
-    gain.connect(ctx.destination);
-    src.start(t);
-    src.stop(t + duration + 0.01);
   }
 
   public playThrow(): void {
@@ -228,7 +282,6 @@ class SoundEngine {
 
   private startBgmLoop(): void {
     this.stopBgm();
-    // Cheerful crisp winter chiptune melody (C major / A minor winter sleigh vibe)
     const melody = [
       659, 0, 784, 659, 880, 0, 784, 659,
       587, 0, 659, 587, 523, 0, 392, 0,

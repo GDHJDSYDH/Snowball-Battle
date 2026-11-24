@@ -93,7 +93,17 @@ export class Renderer25D {
   private lastGroundCanvas: HTMLCanvasElement | null = null;
 
   public render(ctx: CanvasRenderingContext2D, width: number, height: number, state: RenderState, assets: GameAssets): void {
+    if (width <= 0 || height <= 0 || !Number.isFinite(state.viewScale) || state.viewScale <= 0) return;
     ctx.imageSmoothingEnabled = false;
+    ctx.save();
+    try {
+      this.renderInner(ctx, width, height, state, assets);
+    } finally {
+      ctx.restore();
+    }
+  }
+
+  private renderInner(ctx: CanvasRenderingContext2D, width: number, height: number, state: RenderState, assets: GameAssets): void {
     ctx.save();
 
     // Fill outer background (deep winter night pine tone outside map borders)
@@ -317,23 +327,23 @@ export class Renderer25D {
 
     // 8. Tessel Iaido Crescent Moon Slash Arcs
     for (const arc of state.slashArcs) {
-      const p = arc.life / arc.maxLife;
+      const p = Math.max(0, Math.min(1, arc.life / Math.max(0.001, arc.maxLife)));
       ctx.save();
       ctx.translate(arc.x, arc.y);
       ctx.rotate(arc.angle);
       ctx.globalAlpha = Math.min(1, p * 1.4);
       // Outer golden crescent
       ctx.beginPath();
-      ctx.arc(0, 0, arc.radius, -arc.arcSpread * 0.5, arc.arcSpread * 0.5);
+      ctx.arc(0, 0, Math.max(4, arc.radius), -arc.arcSpread * 0.5, arc.arcSpread * 0.5);
       ctx.strokeStyle = arc.color;
-      ctx.lineWidth = 14 * p + 4;
+      ctx.lineWidth = Math.max(1, 14 * p + 4);
       ctx.lineCap = 'round';
       ctx.stroke();
       // Inner white blade gleam
       ctx.beginPath();
-      ctx.arc(0, 0, arc.radius - 7, -arc.arcSpread * 0.44, arc.arcSpread * 0.44);
+      ctx.arc(0, 0, Math.max(2, arc.radius - 7), -arc.arcSpread * 0.44, arc.arcSpread * 0.44);
       ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 6 * p + 2;
+      ctx.lineWidth = Math.max(1, 6 * p + 2);
       ctx.stroke();
       ctx.restore();
     }
@@ -355,23 +365,24 @@ export class Renderer25D {
 
     // 10. 2.5D Particles
     for (const p of state.particles) {
-      const a = Math.max(0, (p.life / p.maxLife) * p.alpha);
+      const a = Math.max(0, Math.min(1, (p.life / Math.max(0.001, p.maxLife)) * p.alpha));
+      const sz = Math.max(1, p.size);
       ctx.save();
       ctx.globalAlpha = a;
       ctx.fillStyle = p.color;
       const py = p.y - p.z;
       if (p.shape === 'circle') {
         ctx.beginPath();
-        ctx.arc(p.x, py, p.size * 0.5, 0, Math.PI * 2);
+        ctx.arc(p.x, py, sz * 0.5, 0, Math.PI * 2);
         ctx.fill();
       } else if (p.shape === 'ring') {
         ctx.strokeStyle = p.color;
         ctx.lineWidth = 2;
         ctx.beginPath();
-        ctx.arc(p.x, py, p.size, 0, Math.PI * 2);
+        ctx.arc(p.x, py, sz, 0, Math.PI * 2);
         ctx.stroke();
       } else {
-        ctx.fillRect(Math.round(p.x - p.size * 0.5), Math.round(py - p.size * 0.5), Math.round(p.size), Math.round(p.size));
+        ctx.fillRect(Math.round(p.x - sz * 0.5), Math.round(py - sz * 0.5), Math.round(sz), Math.round(sz));
       }
       ctx.restore();
     }
@@ -409,10 +420,12 @@ export class Renderer25D {
     ctx.restore(); // End camera world transform
 
     // 13. Screen-Space Time Freeze Atmospheric Tint & Clock Vignette
-    if (state.timeFreezeTimer > 0) {
+    if (state.timeFreezeTimer > 0 && width > 4 && height > 4) {
       ctx.save();
       const pulse = 0.5 + 0.5 * Math.sin(state.time * 6);
-      const grad = ctx.createRadialGradient(width * 0.5, height * 0.5, Math.min(width, height) * 0.25, width * 0.5, height * 0.5, Math.max(width, height) * 0.72);
+      const innerR = Math.max(1, Math.min(width, height) * 0.25);
+      const outerR = Math.max(innerR + 2, Math.max(width, height) * 0.72);
+      const grad = ctx.createRadialGradient(width * 0.5, height * 0.5, innerR, width * 0.5, height * 0.5, outerR);
       grad.addColorStop(0, 'rgba(30, 58, 118, 0.08)');
       grad.addColorStop(1, `rgba(18, 32, 74, ${0.44 + pulse * 0.08})`);
       ctx.fillStyle = grad;
